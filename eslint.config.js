@@ -9,7 +9,8 @@ export default tseslint.config(
   stylistic.configs.customize({ quotes: 'single' }),
   {
     rules: {
-      curly: ['error', 'all'],
+      'curly': ['error', 'all'],
+      '@stylistic/brace-style': ['error', '1tbs'],
     },
   },
 )
