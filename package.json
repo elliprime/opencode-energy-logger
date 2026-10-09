@@ -1,0 +1,36 @@
+{
+  "name": "opencode-energy-logger",
+  "version": "0.1.0",
+  "description": "opencode plugin that logs the energy usage of your sessions",
+  "type": "module",
+  "license": "Unlicense",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.35"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@stylistic/eslint-plugin": "^5.10.0",
+    "@types/node": "^22.0.0",
+    "eslint": "^10.12.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^5.0.3"
+  }
+}
