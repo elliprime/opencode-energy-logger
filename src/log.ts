@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 
 const PREFIX = '[energy-logger]'
 
-function logFilePath(): string {
+export function logFilePath(): string {
   const stateDir = process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state')
   return join(stateDir, 'opencode-energy-logger', 'energy-logger.log')
 }
@@ -13,7 +13,7 @@ let ensureDir: Promise<void> | undefined
 
 function writeLine(line: string): void {
   const file = logFilePath()
-  
+
   ensureDir ??= mkdir(dirname(file), { recursive: true }).then(() => {})
 
   void ensureDir
@@ -36,7 +36,7 @@ function format(args: unknown[]): string {
       }
     })
     .join(' ')
-  
+
   return `${timestamp} ${PREFIX} ${message}\n`
 }
 

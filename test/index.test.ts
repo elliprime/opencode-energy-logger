@@ -1,6 +1,17 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import plugin from '../src/index.js'
-import type { Event, PluginInput } from '@opencode-ai/plugin'
+import type { PluginInput } from '@opencode-ai/plugin'
+import type { Event } from '@opencode-ai/sdk'
+
+const stateDir = mkdtempSync(join(tmpdir(), 'energy-logger-plugin-test-'))
+process.env.XDG_STATE_HOME = stateDir
+
+afterAll(() => {
+  rmSync(stateDir, { recursive: true, force: true })
+})
 
 const input = {
   client: {},
