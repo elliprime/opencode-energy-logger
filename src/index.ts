@@ -1,19 +1,22 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { Plugin } from '@opencode/plugin'
 import { captureEnergyFromResponse } from './energy.js'
-import { readGitBranch } from './git.js'
+import { ensureIgnored, findRepoRoot, readGitBranch } from './git.js'
 import { drain } from './log.js'
 import { Energy } from './rpc.js'
-import { toggleStore } from './toggle.store.js'
+import { localOverridePath, toggleStore } from './toggle.store.js'
 
 export default Plugin.define({
   id: 'opencode-energy-logger',
   setup: async (ctx) => {
     const directory = ctx.location.directory
 
+    const repoRoot = await findRepoRoot(directory)
+
     const toggle = await toggleStore({
       defaultEnabled: ctx.options.defaultEnabled !== false,
-      directory,
-      storage: ctx.storage,
+      directory: repoRoot ?? directory,
     })
 
     const registration = await ctx.rpc.register(Energy, {
@@ -28,7 +31,7 @@ export default Plugin.define({
       },
     })
 
-    // TODO: the serialization strategy below can be extracted and made generic
+    // TODO: the promise chain strategy below can be extracted and made generic
     // and has probably been done in an existing library somewhere.
 
     // flips run one at a time: each flip toggles the state, syncs the http
@@ -39,6 +42,15 @@ export default Plugin.define({
     const flip = (): Promise<{ enabled: boolean }> => {
       const run = flipQueue.then(async () => {
         const enabled = await toggle.toggle()
+
+        // ensure the local override path is added to .gitignore when needed,
+        // but only once the file written by the toggle actually exists
+        if (
+          repoRoot !== undefined
+          && existsSync(join(repoRoot, localOverridePath))
+        ) {
+          await ensureIgnored(repoRoot, localOverridePath)
+        }
 
         if (enabled) {
           await registerHooks()

@@ -1,14 +1,16 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readGitBranch } from '../src/git.js'
+import { ensureIgnored, findRepoRoot, readGitBranch } from '../src/git.js'
 import plugin from '../src/index.js'
 import type { Plugin } from '@opencode/plugin'
 import { logFilePath } from '../src/log.js'
 
 vi.mock('../src/git.js', () => ({
   readGitBranch: vi.fn(async () => undefined),
+  findRepoRoot: vi.fn(async () => undefined),
+  ensureIgnored: vi.fn(async () => undefined),
 }))
 
 const stateDir = mkdtempSync(join(tmpdir(), 'energy-logger-plugin-test-'))
@@ -19,9 +21,13 @@ afterAll(() => {
 })
 
 const mockedReadGitBranch = vi.mocked(readGitBranch)
+const mockedFindRepoRoot = vi.mocked(findRepoRoot)
+const mockedEnsureIgnored = vi.mocked(ensureIgnored)
 
 beforeEach(() => {
   mockedReadGitBranch.mockClear()
+  mockedFindRepoRoot.mockClear()
+  mockedEnsureIgnored.mockClear()
 })
 
 type HookEvent = {
@@ -56,19 +62,20 @@ type CommandDefinition = {
   execute: (input: { sessionID: string, prompt: unknown, delivery: unknown }) => Promise<void>
 }
 
-function makeContext(storageData = new Map<string, unknown>(), hookDelayMs = 0, persistFailures = 0) {
+function makeContext(options: { directory?: string, hookDelayMs?: number } = {}) {
+  const directory = options.directory ?? mkdtempSync(join(stateDir, 'project-'))
   const sessionHooks: HookEntry[] = []
   const rpcHandlers: RpcHandlerMap = {}
   const commands: CommandDefinition[] = []
   const emitted = vi.fn()
 
   const context = {
-    location: { directory: '/project' },
+    location: { directory },
     options: {},
     session: {
       hook: async (name: string, callback: HookCallback) => {
-        if (hookDelayMs > 0) {
-          await new Promise(resolve => setTimeout(resolve, hookDelayMs))
+        if ((options.hookDelayMs ?? 0) > 0) {
+          await new Promise(resolve => setTimeout(resolve, options.hookDelayMs))
         }
         const entry: HookEntry = {
           name,
@@ -80,16 +87,6 @@ function makeContext(storageData = new Map<string, unknown>(), hookDelayMs = 0, 
         }
         sessionHooks.push(entry)
         return { dispose: entry.dispose }
-      },
-    },
-    storage: {
-      get: async (key: string) => storageData.get(key),
-      set: async (key: string, value: unknown) => {
-        if (persistFailures > 0) {
-          persistFailures--
-          throw new Error('storage unavailable')
-        }
-        storageData.set(key, value)
       },
     },
     rpc: {
@@ -114,7 +111,16 @@ function makeContext(storageData = new Map<string, unknown>(), hookDelayMs = 0, 
     },
   } as unknown as Plugin.Context
 
-  return { context, sessionHooks, rpcHandlers, commands, emitted, storageData }
+  return { context, sessionHooks, rpcHandlers, commands, emitted, directory }
+}
+
+function writeConfig(directory: string, name: string, value: unknown): void {
+  mkdirSync(join(directory, '.opencode'), { recursive: true })
+  writeFileSync(join(directory, '.opencode', name), `${JSON.stringify(value, null, 2)}\n`)
+}
+
+function readLocalOverride(directory: string): unknown {
+  return JSON.parse(readFileSync(join(directory, '.opencode', 'energy.local.json'), 'utf8'))
 }
 
 function readLog(): string {
@@ -169,7 +175,7 @@ describe('plugin', () => {
   it('should capture energy with the git branch read when the record is written', async () => {
     mockedReadGitBranch.mockResolvedValue('feature/energy')
 
-    const { context, sessionHooks } = makeContext()
+    const { context, sessionHooks, directory } = makeContext()
     await plugin.setup(context)
 
     expect(plugin.id).toBe('opencode-energy-logger')
@@ -185,7 +191,7 @@ describe('plugin', () => {
 
     const entries = await waitForEnergyEntries(entriesBefore + 1)
     const entry = entries[entries.length - 1]
-    expect(mockedReadGitBranch).toHaveBeenCalledWith('/project')
+    expect(mockedReadGitBranch).toHaveBeenCalledWith(directory)
     expect(entry.sessionID).toBe('ses_1')
     expect(entry.branch).toBe('feature/energy')
     expect(entry.energy).toEqual([{ total_joules: 2.5 }])
@@ -276,29 +282,29 @@ describe('plugin', () => {
   })
 
   it('should not register the http hooks when the folder state starts disabled', async () => {
-    const storageData = new Map<string, unknown>([['directory:/project', false]])
-    const { context, sessionHooks } = makeContext(storageData)
+    const { context, sessionHooks, directory } = makeContext()
+    writeConfig(directory, 'energy.local.json', { enabled: false })
     await plugin.setup(context)
 
     expect(sessionHooks).toEqual([])
   })
 
   it('should apply concurrent toggles one at a time', async () => {
-    const { context, rpcHandlers, emitted } = makeContext()
+    const { context, rpcHandlers, emitted, directory } = makeContext()
     await plugin.setup(context)
 
     const results = await Promise.all([rpcHandlers.toggle({}), rpcHandlers.toggle({})])
 
     expect(results).toEqual([{ enabled: false }, { enabled: true }])
     expect(emitted.mock.calls).toEqual([
-      ['toggled', { directory: '/project', enabled: false }],
-      ['toggled', { directory: '/project', enabled: true }],
+      ['toggled', { directory, enabled: false }],
+      ['toggled', { directory, enabled: true }],
     ])
   })
 
   it('should dispose the http hooks even when a disable toggle arrives while the hooks are registering', async () => {
-    const storageData = new Map<string, unknown>([['directory:/project', false]])
-    const { context, sessionHooks, rpcHandlers } = makeContext(storageData, 50)
+    const { context, sessionHooks, rpcHandlers, directory } = makeContext({ hookDelayMs: 50 })
+    writeConfig(directory, 'energy.local.json', { enabled: false })
     await plugin.setup(context)
 
     const enabling = rpcHandlers.toggle({})
@@ -323,23 +329,27 @@ describe('plugin', () => {
   })
 
   it('should emit a toggled event when the state flips', async () => {
-    const { context, rpcHandlers, emitted } = makeContext()
+    const { context, rpcHandlers, emitted, directory } = makeContext()
     await plugin.setup(context)
 
     await rpcHandlers.toggle({})
 
-    expect(emitted).toHaveBeenCalledWith('toggled', { directory: '/project', enabled: false })
+    expect(emitted).toHaveBeenCalledWith('toggled', { directory, enabled: false })
   })
 
   it('should surface a persist failure without flipping the folder state', async () => {
-    const { context, sessionHooks, rpcHandlers, emitted } = makeContext(new Map<string, unknown>(), 0, 1)
+    const { context, sessionHooks, rpcHandlers, emitted, directory } = makeContext()
     await plugin.setup(context)
+
+    // a directory at the override path makes the atomic rename fail
+    const blocking = join(directory, '.opencode', 'energy.local.json')
+    mkdirSync(blocking, { recursive: true })
 
     const error: RpcErrorFactory = (type, message, data) => ({ type, message, data })
     await expect(rpcHandlers.toggle({}, { error })).resolves.toEqual({
       type: 'toggle_failed',
-      message: 'could not toggle energy logging: storage unavailable',
-      data: { message: 'storage unavailable' },
+      message: expect.stringContaining('could not toggle energy logging:'),
+      data: { message: expect.stringContaining('rename') },
     })
 
     expect(await rpcHandlers.get({})).toEqual({ enabled: true })
@@ -347,8 +357,9 @@ describe('plugin', () => {
     expect(sessionHooks.every(hook => !hook.disposed)).toBe(true)
 
     // the failed flip leaves the queue usable and the next persist succeeds
+    rmSync(blocking, { recursive: true, force: true })
     await expect(rpcHandlers.toggle({}, { error })).resolves.toEqual({ enabled: false })
-    expect(emitted).toHaveBeenCalledWith('toggled', { directory: '/project', enabled: false })
+    expect(emitted).toHaveBeenCalledWith('toggled', { directory, enabled: false })
     expect(sessionHooks.every(hook => hook.disposed)).toBe(true)
   })
 
@@ -369,9 +380,42 @@ describe('plugin', () => {
     await plugin.setup(first.context)
     await first.rpcHandlers.toggle({})
 
-    const second = makeContext(first.storageData)
+    const second = makeContext({ directory: first.directory })
     await plugin.setup(second.context)
 
     await expect(second.rpcHandlers.get({})).resolves.toEqual({ enabled: false })
+  })
+
+  it('should read the committed config at the repository root when the directory is inside a repository', async () => {
+    const { directory: repo } = makeContext()
+    writeConfig(repo, 'energy.json', { enabled: false })
+    const nested = join(repo, 'nested')
+    mkdirSync(nested, { recursive: true })
+
+    mockedFindRepoRoot.mockResolvedValueOnce(repo)
+    const { context, sessionHooks } = makeContext({ directory: nested })
+    await plugin.setup(context)
+
+    expect(sessionHooks).toEqual([])
+  })
+
+  it('should ignore the local override in the repository when it is toggled', async () => {
+    const { context, rpcHandlers, directory } = makeContext()
+    mockedFindRepoRoot.mockResolvedValueOnce(directory)
+    await plugin.setup(context)
+
+    await rpcHandlers.toggle({})
+
+    expect(mockedEnsureIgnored).toHaveBeenCalledWith(directory, '.opencode/energy.local.json')
+    expect(readLocalOverride(directory)).toEqual({ enabled: false })
+  })
+
+  it('should not touch the repository exclude file outside a repository', async () => {
+    const { context, rpcHandlers } = makeContext()
+    await plugin.setup(context)
+
+    await rpcHandlers.toggle({})
+
+    expect(mockedEnsureIgnored).not.toHaveBeenCalled()
   })
 })

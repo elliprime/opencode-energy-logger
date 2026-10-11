@@ -1,4 +1,5 @@
 node_modules/
 dist/
+.opencode/energy.local.json
 /AGENTS.md
 .idea/
