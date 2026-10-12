@@ -22,3 +22,47 @@ from the first of:
 
 3. the `defaultEnabled` plugin option, which defaults to `true`.
 -->
+
+## Where the energy records go
+
+<!--
+While capturing, every record is mirrored into `.energy/<sessionID>.jsonl` at
+the root of the git repository containing the folder: one JSON object per
+line, one file per session. Every record carries an `id` — the md5 of the
+whole record — so copies of one record stay recognisable across branches
+and machines, while distinct captures can never share one. The files grow by appending each record and are
+staged with `git add .energy`, coalesced to at most one run per half second,
+so they ride along with the next commit, merge like any other file when
+branches or pull requests come together, and are visible to reviewers right in
+the diff.
+
+Two small files inside `.energy` are written once and are meant to be
+committed with it:
+
+1. `.gitattributes` marks the record files `merge=union`, so branches that
+   logged the same session merge their lines instead of conflicting. Union
+   merges can interleave or repeat lines, so readers order records by their
+   `time` and deduplicate by their `id`.
+2. `.gitignore` keeps the temporary files of the atomic writes out of the
+   repository.
+
+The durable source of truth for a session stays outside the repository, at
+`$XDG_STATE_HOME/opencode-energy-logger/sessions/<repository>/<sessionID>.jsonl`,
+scoped to the repository the records were made in so one repository never sees
+another's records. The `.energy` files mirror it record by record and —
+whenever they stop matching the file the plugin last wrote, after a
+`git reset --hard`, a branch switch or a merge replaced them — are rebuilt as
+the merge of the durable state and the copy in git, so neither local records
+nor records that arrived through pulls and merges can be lost. A session
+spanning a branch switch writes its growing file on both branches — exactly
+the shape the union merge resolves — and when the session's writes are flushed
+the local view copies are deduplicated, so duplicates a union merge left
+behind are gone before the next commit. The flush runs when the plugin
+unloads, after waiting for the body scans of the responses still streaming,
+so records from requests in flight at shutdown land too. Outside a git
+repository only the state directory is written.
+
+Do not add `.energy` to an ignore file: the records are meant to be committed
+with the code they describe. An ignored `.energy` directory is reported to
+the debug log, which the `ENERGY_LOGGER_DEBUG` environment variable enables.
+-->

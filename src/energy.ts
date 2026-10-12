@@ -1,4 +1,6 @@
-import { debug, log } from './log.js'
+import { createHash } from 'node:crypto'
+import { appendEnergyRecord } from './energy.store.js'
+import { debug } from './log.js'
 
 const ENERGY_COMMENT = /^:\s*energy\s*/
 
@@ -105,6 +107,43 @@ function formatModelRef(ref: { providerID: string, id: string, variant?: string 
   }
 
   return ref.variant ? `${ref.providerID}/${ref.id}#${ref.variant}` : `${ref.providerID}/${ref.id}`
+}
+
+/**
+ * Serializes a value with object keys sorted and undefined entries dropped,
+ * so equal records serialize identically no matter the key order.
+ *
+ * Values nested deeper than five levels serialize as null: no record is that
+ * deep, and the bound keeps an arbitrarily deep energy payload from
+ * exhausting the call stack.
+ */
+function stableStringify(value: unknown, depth = 1): string {
+  if (depth > 5) {
+    return 'null'
+  }
+
+  if (Array.isArray(value)) {
+    const items = Array.from(value, item => stableStringify(item, depth + 1))
+    return `[${items.join(',')}]`
+  }
+
+  if (isRecord(value)) {
+    const entries = Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    const body = entries
+      .map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry, depth + 1)}`)
+      .join(',')
+    return `{${body}}`
+  }
+
+  return JSON.stringify(value) ?? 'null'
+}
+
+export function recordId(record: Record<string, unknown>): string {
+  const rest = { ...record }
+  delete rest.id
+  return createHash('md5').update(stableStringify(rest)).digest('hex')
 }
 
 /**
@@ -239,7 +278,9 @@ async function scanResponseStream(stream: ReadableStream<Uint8Array>): Promise<u
  * Captures energy values from a model HTTP response.
  *
  * The request and response are cloned before any awaiting so the caller can
- * keep consuming the original bodies undisturbed. Never throws.
+ * keep consuming the original bodies undisturbed. The record is mirrored
+ * into the repository's `.energy` directory when `repoRoot` is given.
+ * Never throws.
  */
 export async function captureEnergyFromResponse(
   input: {
@@ -251,6 +292,7 @@ export async function captureEnergyFromResponse(
     response: Response
   },
   getBranch?: () => Promise<string | undefined>,
+  repoRoot?: string,
 ): Promise<void> {
   const { sessionID, agent, kind, model: modelRef, request, response } = input
 
@@ -302,17 +344,27 @@ export async function captureEnergyFromResponse(
 
   const branchName = getBranch === undefined ? undefined : await getBranch()
 
-  const record = {
-    type: 'energy',
-    ...(sessionID !== undefined ? { sessionID } : {}),
-    ...(kind !== undefined ? { kind } : {}),
-    ...(agent !== undefined ? { agent } : {}),
-    ...(branchName !== undefined ? { branch: branchName } : {}),
-    url: request.url,
-    model,
-    prompt: extractUserPrompt(bodyJson),
-    energy: energies,
-  }
+  // the capture runs detached from the response hook, so nothing here may
+  // throw: a record that cannot be built or written is dropped instead
+  try {
+    const time = new Date().toISOString()
+    const prompt = extractUserPrompt(bodyJson)
 
-  log(JSON.stringify(record))
+    const record = {
+      type: 'energy',
+      time,
+      ...(sessionID !== undefined ? { sessionID } : {}),
+      ...(kind !== undefined ? { kind } : {}),
+      ...(agent !== undefined ? { agent } : {}),
+      ...(branchName !== undefined ? { branch: branchName } : {}),
+      url: request.url,
+      model,
+      prompt,
+      energy: energies,
+    }
+
+    appendEnergyRecord({ ...record, id: recordId(record) }, repoRoot)
+  } catch (error) {
+    debug(`energy record write failed: ${String(error)}`)
+  }
 }

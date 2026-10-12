@@ -2,10 +2,11 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Plugin } from '@opencode/plugin'
 import { captureEnergyFromResponse } from './energy.js'
+import { flushEnergyRecords } from './energy.store.js'
 import { ensureIgnored, findRepoRoot, readGitBranch } from './git.js'
-import { drain } from './log.js'
+import { flush as flushLog } from './log.js'
 import { Energy } from './rpc.js'
-import { localOverridePath, toggleStore } from './toggle.store.js'
+import { localOverridePath, localOverrideTempGlob, toggleStore } from './toggle.store.js'
 
 export default Plugin.define({
   id: 'opencode-energy-logger',
@@ -43,13 +44,14 @@ export default Plugin.define({
       const run = flipQueue.then(async () => {
         const enabled = await toggle.toggle()
 
-        // ensure the local override path is added to .gitignore when needed,
-        // but only once the file written by the toggle actually exists
+        // ensure the local override and its atomic write's temp files are
+        // added to .gitignore when needed, but only once the file written by
+        // the toggle actually exists
         if (
           repoRoot !== undefined
           && existsSync(join(repoRoot, localOverridePath))
         ) {
-          await ensureIgnored(repoRoot, localOverridePath)
+          await ensureIgnored(repoRoot, localOverridePath, localOverrideTempGlob)
         }
 
         if (enabled) {
@@ -83,6 +85,11 @@ export default Plugin.define({
     // never complete are dropped along with the request object
     const branchByRequest = new WeakMap<Request, () => Promise<string | undefined>>()
 
+    // captures run unawaited so responses are not held up by the body scan;
+    // they are tracked here so the cleanup below can wait for the ones still
+    // scanning before the records are flushed
+    const pendingCaptures = new Set<Promise<void>>()
+
     // the http hooks stay unregistered while logging is disabled, so opencode
     // doesn't do any work at all in this case
     let hooks: Array<{ dispose: () => Promise<void> }> | undefined
@@ -100,13 +107,19 @@ export default Plugin.define({
         }),
 
         // the hook callback runs before the response continues to the model
-        // driver, so the (potentially long) body scan must not be awaited here
+        // driver, so the (potentially long) body scan must not be awaited
+        // here; the capture is tracked instead, so the cleanup can wait for
+        // it before flushing the records
         await ctx.session.hook('http.response', (event) => {
           if (!toggle.enabled()) {
             return
           }
 
-          void captureEnergyFromResponse(event, branchByRequest.get(event.request))
+          const capture = captureEnergyFromResponse(event, branchByRequest.get(event.request), repoRoot)
+          pendingCaptures.add(capture)
+          void capture.finally(() => {
+            pendingCaptures.delete(capture)
+          })
         }),
       ]
     }
@@ -130,8 +143,15 @@ export default Plugin.define({
       // stop new captures
       await unregisterHooks()
 
-      // then flush pending writes
-      await drain()
+      // wait for the body scans of the responses still streaming, so every
+      // record they produce reaches the flush below
+      await Promise.allSettled([...pendingCaptures])
+
+      // flush energy records
+      await flushEnergyRecords()
+
+      // flush logs
+      await flushLog()
     }
   },
 })

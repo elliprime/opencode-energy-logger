@@ -1,8 +1,9 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { ensureIgnored, findRepoRoot, readGitBranch } from '../src/git.js'
+import { dirname, join } from 'node:path'
+import { flushEnergyRecords } from '../src/energy.store.js'
+import { ensureIgnored, findRepoRoot, isIgnored, readGitBranch, stagePath } from '../src/git.js'
 import plugin from '../src/index.js'
 import type { Plugin } from '@opencode/plugin'
 import { logFilePath } from '../src/log.js'
@@ -11,6 +12,9 @@ vi.mock('../src/git.js', () => ({
   readGitBranch: vi.fn(async () => undefined),
   findRepoRoot: vi.fn(async () => undefined),
   ensureIgnored: vi.fn(async () => undefined),
+  isIgnored: vi.fn(async () => false),
+  stagePath: vi.fn(async () => true),
+  showHeadFile: vi.fn(async () => undefined),
 }))
 
 const stateDir = mkdtempSync(join(tmpdir(), 'energy-logger-plugin-test-'))
@@ -23,11 +27,15 @@ afterAll(() => {
 const mockedReadGitBranch = vi.mocked(readGitBranch)
 const mockedFindRepoRoot = vi.mocked(findRepoRoot)
 const mockedEnsureIgnored = vi.mocked(ensureIgnored)
+const mockedIsIgnored = vi.mocked(isIgnored)
+const mockedStagePath = vi.mocked(stagePath)
 
 beforeEach(() => {
   mockedReadGitBranch.mockClear()
   mockedFindRepoRoot.mockClear()
   mockedEnsureIgnored.mockClear()
+  mockedIsIgnored.mockClear()
+  mockedStagePath.mockClear()
 })
 
 type HookEvent = {
@@ -123,19 +131,42 @@ function readLocalOverride(directory: string): unknown {
   return JSON.parse(readFileSync(join(directory, '.opencode', 'energy.local.json'), 'utf8'))
 }
 
-function readLog(): string {
-  try {
-    return readFileSync(logFilePath(), 'utf8')
-  } catch {
-    return ''
+function sessionStates(): string[] {
+  const sessions = join(dirname(logFilePath()), 'sessions')
+  if (!existsSync(sessions)) {
+    return []
   }
+
+  // the session state is scoped per repository: one directory per repository
+  const files = readdirSync(sessions, { withFileTypes: true })
+    .flatMap(entry =>
+      entry.isDirectory()
+        ? readdirSync(join(sessions, entry.name)).map(name => join(sessions, entry.name, name))
+        : [join(sessions, entry.name)],
+    )
+  return files.filter(file => file.endsWith('.jsonl')).map(file => readFileSync(file, 'utf8'))
 }
 
 function energyEntries(): Record<string, unknown>[] {
-  return readLog()
-    .split('\n')
-    .filter(line => line.includes('"type":"energy"'))
-    .map(line => JSON.parse(line.slice(line.indexOf('[energy-logger] ') + '[energy-logger] '.length)))
+  const entries: Record<string, unknown>[] = []
+  for (const text of sessionStates()) {
+    for (const line of text.split('\n')) {
+      if (line === '') {
+        continue
+      }
+
+      try {
+        entries.push(JSON.parse(line))
+      } catch {
+        // an append still in flight can leave a partial line behind
+      }
+    }
+  }
+
+  // records of different sessions interleave across files, so readers
+  // order them by their time
+  entries.sort((a, b) => String(a.time).localeCompare(String(b.time)))
+  return entries
 }
 
 async function waitForEnergyEntries(expectedCount: number): Promise<Record<string, unknown>[]> {
@@ -147,7 +178,7 @@ async function waitForEnergyEntries(expectedCount: number): Promise<Record<strin
     }
     await new Promise(resolve => setTimeout(resolve, 25))
   }
-  throw new Error(`timed out waiting for ${expectedCount} energy entries, log contains:\n${readLog()}`)
+  throw new Error(`timed out waiting for ${expectedCount} energy entries, session states contain:\n${sessionStates().join('')}`)
 }
 
 const baseEvent: Omit<HookEvent, 'request'> = {
@@ -156,6 +187,8 @@ const baseEvent: Omit<HookEvent, 'request'> = {
   kind: 'primary',
   model: { providerID: 'neuralwatt', id: 'test-model' },
 }
+
+const encoder = new TextEncoder()
 
 function modelRequest(): Request {
   return new Request('http://127.0.0.1:1/v1/chat/completions', {
@@ -406,8 +439,78 @@ describe('plugin', () => {
 
     await rpcHandlers.toggle({})
 
-    expect(mockedEnsureIgnored).toHaveBeenCalledWith(directory, '.opencode/energy.local.json')
+    expect(mockedEnsureIgnored).toHaveBeenCalledWith(directory, '.opencode/energy.local.json', '.opencode/energy.local.json.*.tmp')
     expect(readLocalOverride(directory)).toEqual({ enabled: false })
+  })
+
+  it('should write and stage the energy view in the repository while capturing', async () => {
+    const { context, sessionHooks, directory } = makeContext()
+    mockedFindRepoRoot.mockResolvedValueOnce(directory)
+    await plugin.setup(context)
+
+    const entriesBefore = energyEntries().length
+    const request = modelRequest()
+
+    await sessionHooks[0].callback({ ...baseEvent, request })
+    await sessionHooks[1].callback({ ...baseEvent, request, response: energyResponse() })
+
+    await waitForEnergyEntries(entriesBefore + 1)
+    await flushEnergyRecords()
+
+    expect(readFileSync(join(directory, '.energy', 'ses_1.jsonl'), 'utf8')).toContain('"sessionID":"ses_1"')
+    expect(mockedIsIgnored).toHaveBeenCalledWith(directory, '.energy')
+    expect(mockedStagePath).toHaveBeenCalledWith(directory, '.energy')
+  })
+
+  it('should wait for the captures still scanning before flushing', async () => {
+    const { context, sessionHooks, directory } = makeContext()
+    mockedFindRepoRoot.mockResolvedValueOnce(directory)
+    const cleanup = await plugin.setup(context)
+    if (typeof cleanup !== 'function') {
+      throw new Error('the setup must return its cleanup')
+    }
+
+    // the response body only ends when the test releases it, so the capture's
+    // body scan stays in flight while the cleanup below runs
+    let release!: () => void
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        release = () => {
+          controller.enqueue(encoder.encode(': energy {"total_joules": 1.5}\n\n'))
+          controller.close()
+        }
+      },
+    })
+    const response = new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })
+
+    const entriesBefore = energyEntries().length
+    const request = modelRequest()
+
+    await sessionHooks[0].callback({ ...baseEvent, request })
+    await sessionHooks[1].callback({ ...baseEvent, request, response })
+
+    let settled = false
+    const disposing = (async () => {
+      await cleanup()
+      settled = true
+    })()
+
+    // a cleanup that skipped the capture would reach the flush, find nothing
+    // to write and return long before the body ends
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(settled).toBe(false)
+
+    release()
+    await disposing
+
+    // the capture's record reached the durable state, the view and the stage
+    const entries = await waitForEnergyEntries(entriesBefore + 1)
+    expect(entries[entries.length - 1].energy).toEqual([{ total_joules: 1.5 }])
+    expect(readFileSync(join(directory, '.energy', 'ses_1.jsonl'), 'utf8')).toContain('"sessionID":"ses_1"')
+    expect(mockedStagePath).toHaveBeenCalledWith(directory, '.energy')
   })
 
   it('should not touch the repository exclude file outside a repository', async () => {

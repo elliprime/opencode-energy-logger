@@ -13,6 +13,9 @@ const localName = 'energy.local.json'
 
 export const localOverridePath = `${configDirName}/${localName}`
 
+/** Temp files of the atomic write; git ignored together with the local override. */
+export const localOverrideTempGlob = `${localOverridePath}.*.tmp`
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }

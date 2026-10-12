@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realp
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { GIT_REPO_ENV_VARS, ensureIgnored, findRepoRoot, readGitBranch } from '../src/git.js'
+import { GIT_REPO_ENV_VARS, ensureIgnored, findRepoRoot, readGitBranch, showHeadFile } from '../src/git.js'
 
 // the pre-commit hook runs these tests inside the enclosing `git commit`
 // process (`git commit -a` sets GIT_INDEX_FILE to its live staging area),
@@ -117,6 +117,19 @@ describe.skipIf(!gitAvailable)('ensureIgnored', () => {
     expect(spawnSync('git', ['-C', repo, 'check-ignore', '-q', '--', '.opencode/energy.local.json']).status).toBe(0)
   })
 
+  it('should ignore every given path', async () => {
+    const repo = makeRepo('ignore-multi-repo')
+
+    await ensureIgnored(repo, '.opencode/energy.local.json', '.opencode/energy.local.json.*.tmp')
+
+    expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe(
+      '.opencode/energy.local.json\n.opencode/energy.local.json.*.tmp\n')
+
+    // git agrees both the override and a temp file of its atomic write are ignored
+    expect(spawnSync('git', ['-C', repo, 'check-ignore', '-q', '--', '.opencode/energy.local.json']).status).toBe(0)
+    expect(spawnSync('git', ['-C', repo, 'check-ignore', '-q', '--', '.opencode/energy.local.json.123.tmp']).status).toBe(0)
+  })
+
   it('should not append the path twice', async () => {
     const repo = makeRepo('ignore-twice-repo')
 
@@ -153,5 +166,36 @@ describe.skipIf(!gitAvailable)('ensureIgnored', () => {
 
     await expect(ensureIgnored(plain, '.opencode/energy.local.json')).resolves.toBeUndefined()
     expect(existsSync(join(plain, '.gitignore'))).toBe(false)
+  })
+})
+
+describe.skipIf(!gitAvailable)('showHeadFile', () => {
+  const commitAsTest = ['-c', 'user.email=test@example.com', '-c', 'user.name=test']
+
+  it('should read a file as committed in HEAD', async () => {
+    const repo = makeRepo('head-file-repo')
+    writeFileSync(join(repo, 'ses_1.jsonl'), 'records\n')
+    git(repo, 'add', 'ses_1.jsonl')
+    git(repo, ...commitAsTest, 'commit', '-m', 'add records')
+
+    expect(await showHeadFile(repo, 'ses_1.jsonl')).toBe('records\n')
+  })
+
+  it('should read a file larger than one megabyte', async () => {
+    const repo = makeRepo('head-big-repo')
+    // session views grow with the records they carry and routinely pass a
+    // megabyte once prompts are part of them
+    const content = `${'x'.repeat(2 * 1024 * 1024)}\n`
+    writeFileSync(join(repo, 'ses_1.jsonl'), content)
+    git(repo, 'add', 'ses_1.jsonl')
+    git(repo, ...commitAsTest, 'commit', '-m', 'add big records')
+
+    expect(await showHeadFile(repo, 'ses_1.jsonl')).toBe(content)
+  })
+
+  it('should resolve undefined for a file that is not in HEAD', async () => {
+    const repo = makeRepo('head-missing-repo')
+
+    expect(await showHeadFile(repo, 'ses_1.jsonl')).toBeUndefined()
   })
 })

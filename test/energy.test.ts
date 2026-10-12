@@ -1,14 +1,24 @@
 import { afterAll, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   captureEnergyFromResponse,
   extractEnergyFromJsonBody,
   extractUserPrompt,
   parseEnergyComment,
+  recordId,
 } from '../src/energy.js'
+import { flushEnergyRecords } from '../src/energy.store.js'
+import { GIT_REPO_ENV_VARS } from '../src/git.js'
 import { logFilePath } from '../src/log.js'
+
+// the pre-commit hook runs these tests inside the enclosing `git commit`
+// process, whose git environment variables would otherwise leak into the git
+// commands the energy store spawns
+for (const name of GIT_REPO_ENV_VARS) {
+  delete process.env[name]
+}
 
 const stateDir = mkdtempSync(join(tmpdir(), 'energy-logger-test-'))
 process.env.XDG_STATE_HOME = stateDir
@@ -100,19 +110,83 @@ describe('extractUserPrompt', () => {
   })
 })
 
-function readLog(): string {
-  try {
-    return readFileSync(logFilePath(), 'utf8')
-  } catch {
-    return ''
+describe('recordId', () => {
+  const record = {
+    type: 'energy',
+    time: '2026-01-01T00:00:00.000Z',
+    sessionID: 'ses_1',
+    kind: 'primary',
+    url: 'http://127.0.0.1:1/v1/chat/completions',
+    model: 'model',
+    prompt: 'same prompt',
+    energy: [{ total_joules: 1 }],
   }
+
+  it('should differ for records that differ only in their energy', () => {
+    expect(recordId({ ...record, energy: [{ total_joules: 2 }] })).not.toBe(recordId(record))
+  })
+
+  it('should ignore the id field of the record it hashes', () => {
+    expect(recordId({ ...record, id: 'some earlier id' })).toBe(recordId(record))
+  })
+
+  it('should hash a record identically regardless of key order', () => {
+    const reversed = Object.fromEntries(Object.entries(record).reverse())
+    expect(recordId(reversed)).toBe(recordId(record))
+  })
+
+  it('should ignore undefined fields the written record line does not carry', () => {
+    expect(recordId({ ...record, branch: undefined })).toBe(recordId(record))
+  })
+
+  it('should ignore values nested deeper than five levels', () => {
+    // the leaf sits six levels down — record, energy, element, a, b, c — one
+    // past the bound, so it cannot reach the hash
+    const past = (leaf: unknown) => [{ a: { b: { c: leaf } } }]
+
+    expect(recordId({ ...record, energy: past('left') })).toBe(recordId({ ...record, energy: past('right') }))
+  })
+
+  it('should keep hashing values nested five levels deep', () => {
+    // the leaf sits five levels down — record, energy, element, a, b — still
+    // within the bound
+    const within = (leaf: unknown) => [{ a: { b: leaf } }]
+
+    expect(recordId({ ...record, energy: within('left') })).not.toBe(recordId({ ...record, energy: within('right') }))
+  })
+})
+
+function sessionStates(): string[] {
+  const sessions = join(dirname(logFilePath()), 'sessions')
+  if (!existsSync(sessions)) {
+    return []
+  }
+
+  return readdirSync(sessions)
+    .filter(file => file.endsWith('.jsonl'))
+    .map(file => readFileSync(join(sessions, file), 'utf8'))
 }
 
 function energyEntries(): Record<string, unknown>[] {
-  return readLog()
-    .split('\n')
-    .filter(line => line.includes('"type":"energy"'))
-    .map(line => JSON.parse(line.slice(line.indexOf('[energy-logger] ') + '[energy-logger] '.length)))
+  const entries: Record<string, unknown>[] = []
+  for (const text of sessionStates()) {
+    for (const line of text.split('\n')) {
+      if (line === '') {
+        continue
+      }
+
+      try {
+        entries.push(JSON.parse(line))
+      } catch {
+        // an append still in flight can leave a partial line behind
+      }
+    }
+  }
+
+  // records of different sessions interleave across files, so readers
+  // order them by their time
+  entries.sort((a, b) => String(a.time).localeCompare(String(b.time)))
+  return entries
 }
 
 async function waitForEnergyEntries(expectedCount: number): Promise<Record<string, unknown>[]> {
@@ -124,7 +198,7 @@ async function waitForEnergyEntries(expectedCount: number): Promise<Record<strin
     }
     await new Promise(resolve => setTimeout(resolve, 25))
   }
-  throw new Error(`timed out waiting for ${expectedCount} energy entries, log contains:\n${readLog()}`)
+  throw new Error(`timed out waiting for ${expectedCount} energy entries, session states contain:\n${sessionStates().join('')}`)
 }
 
 const encoder = new TextEncoder()
@@ -181,6 +255,7 @@ describe('captureEnergyFromResponse', () => {
 
     const entry = entries[entries.length - 1]
     expect(entry.url).toBe(url)
+    expect(entry.time).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
     expect(entry.sessionID).toBe('ses_1')
     expect(entry.model).toBe('test-model')
     expect(entry.prompt).toBe('what is the energy cost')
@@ -496,7 +571,7 @@ describe('captureEnergyFromResponse', () => {
     expect(entry.energy).toEqual([{ total_joules: 8.5 }])
   })
 
-  it('should omit the sessionID field when the event has none', async () => {
+  it('should not write a record when the event has no sessionID', async () => {
     const url = 'http://127.0.0.1:1/v1/chat/completions'
     const request = modelRequest(url, {
       model: 'anon-model',
@@ -508,11 +583,10 @@ describe('captureEnergyFromResponse', () => {
 
     const entriesBefore = energyEntries().length
     await captureEnergyFromResponse({ request, response })
+    await response.text()
+    await new Promise(resolve => setTimeout(resolve, 200))
 
-    const entries = await waitForEnergyEntries(entriesBefore + 1)
-    const entry = entries[entries.length - 1]
-    expect(entry.sessionID).toBeUndefined()
-    expect(entry.energy).toEqual([{ total_joules: 1.5 }])
+    expect(energyEntries().length).toBe(entriesBefore)
   })
 
   it('should prefer the hook event model over the request body model', async () => {
@@ -654,5 +728,100 @@ describe('captureEnergyFromResponse', () => {
     const entry = entries[entries.length - 1]
     expect(entry.branch).toBeUndefined()
     expect(entry.energy).toEqual([{ total_joules: 6.5 }])
+  })
+
+  it('should write the session view into the repository when a repo root is provided', async () => {
+    const url = 'http://127.0.0.1:1/v1/chat/completions'
+    const repo = mkdtempSync(join(stateDir, 'view-repo-'))
+    const request = modelRequest(url, {
+      model: 'view-model',
+      messages: [{ role: 'user', content: 'mirror me into the repository' }],
+    })
+    const response = modelResponse(sseStream([
+      ': energy {"total_joules": 2.5}\n\n',
+    ]), 'text/event-stream')
+
+    await captureEnergyFromResponse({ sessionID: 'ses_23', request, response }, undefined, repo)
+    await flushEnergyRecords()
+
+    const view = readFileSync(join(repo, '.energy', 'ses_23.jsonl'), 'utf8')
+    expect(view).toContain('"sessionID":"ses_23"')
+    expect(view).toContain('"total_joules":2.5')
+    expect(readFileSync(join(repo, '.energy', '.gitattributes'), 'utf8')).toBe('*.jsonl merge=union\n')
+    expect(readFileSync(join(repo, '.energy', '.gitignore'), 'utf8')).toBe('*.tmp\n')
+  })
+
+  it('should tag each record with an id derived from its content', async () => {
+    const url = 'http://127.0.0.1:1/v1/chat/completions'
+    const request = modelRequest(url, {
+      model: 'id-model',
+      messages: [{ role: 'user', content: 'identity check' }],
+    })
+    const response = modelResponse(sseStream([
+      ': energy {"total_joules": 7.5}\n\n',
+    ]), 'text/event-stream')
+
+    const entriesBefore = energyEntries().length
+    await captureEnergyFromResponse({ sessionID: 'ses_20', request, response })
+
+    const entries = await waitForEnergyEntries(entriesBefore + 1)
+    const entry = entries[entries.length - 1]
+    // a copy of the record mirrored elsewhere keeps the same id
+    expect(entry.id).toBe(recordId(entry))
+  })
+
+  it('should keep both same-time same-prompt captures with different energy through the rebuild and the flush', async () => {
+    // a frozen clock makes both captures stamp the same time
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+
+    try {
+      const url = 'http://127.0.0.1:1/v1/chat/completions'
+      const body = { model: 'double-model', messages: [{ role: 'user', content: 'measured twice' }] }
+      const repo = mkdtempSync(join(stateDir, 'double-repo-'))
+      const viewPath = join(repo, '.energy', 'ses_24.jsonl')
+      const capture = (joules: number) =>
+        captureEnergyFromResponse(
+          {
+            sessionID: 'ses_24',
+            request: modelRequest(url, body),
+            response: modelResponse(sseStream([`: energy {"total_joules": ${joules}}\n\n`]), 'text/event-stream'),
+          },
+          undefined,
+          repo,
+        )
+      const recordsOf = (text: string) =>
+        text.split('\n').filter(line => line !== '').map(line => JSON.parse(line) as Record<string, unknown>)
+
+      await capture(1)
+      await capture(2)
+      await flushEnergyRecords()
+
+      const raw = readFileSync(viewPath, 'utf8')
+      let records = recordsOf(raw)
+      expect(records).toHaveLength(2)
+      expect(new Set(records.map(record => record.id)).size).toBe(2)
+      expect(records.map(record => record.energy)).toEqual([[{ total_joules: 1 }], [{ total_joules: 2 }]])
+      expect(records.every(record => record.time === '2026-01-01T00:00:00.000Z')).toBe(true)
+
+      // the view is replaced behind the plugin's back, like a branch switch
+      // or a `git reset --hard` would, so the next capture rebuilds it from
+      // the durable state
+      writeFileSync(viewPath, `${raw.split('\n')[0]}\n`)
+
+      await capture(3)
+      await flushEnergyRecords()
+
+      records = recordsOf(readFileSync(viewPath, 'utf8'))
+      expect(records).toHaveLength(3)
+      expect(new Set(records.map(record => record.id)).size).toBe(3)
+      expect(records.map(record => record.energy)).toEqual([
+        [{ total_joules: 1 }],
+        [{ total_joules: 2 }],
+        [{ total_joules: 3 }],
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
