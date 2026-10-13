@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -17,12 +17,11 @@ function makeDirectory(name: string): string {
 }
 
 function writeConfig(directory: string, name: string, value: unknown): void {
-  mkdirSync(join(directory, '.opencode'), { recursive: true })
-  writeFileSync(join(directory, '.opencode', name), `${JSON.stringify(value, null, 2)}\n`)
+  writeFileSync(join(directory, name), `${JSON.stringify(value, null, 2)}\n`)
 }
 
 function readLocalOverride(directory: string): unknown {
-  return JSON.parse(readFileSync(join(directory, '.opencode', 'energy.local.json'), 'utf8'))
+  return JSON.parse(readFileSync(join(directory, '.energy.local.json'), 'utf8'))
 }
 
 describe('toggleStore', () => {
@@ -41,7 +40,7 @@ describe('toggleStore', () => {
 
   it('should read the committed config', async () => {
     const directory = makeDirectory('committed')
-    writeConfig(directory, 'energy.json', { enabled: false })
+    writeConfig(directory, '.energy.json', { enabled: false })
 
     const toggle = await toggleStore({ defaultEnabled: true, directory })
 
@@ -50,8 +49,8 @@ describe('toggleStore', () => {
 
   it('should prefer the local override over the committed config', async () => {
     const directory = makeDirectory('override')
-    writeConfig(directory, 'energy.json', { enabled: true })
-    writeConfig(directory, 'energy.local.json', { enabled: false })
+    writeConfig(directory, '.energy.json', { enabled: true })
+    writeConfig(directory, '.energy.local.json', { enabled: false })
 
     const toggle = await toggleStore({ defaultEnabled: true, directory })
 
@@ -60,8 +59,8 @@ describe('toggleStore', () => {
 
   it('should ignore unusable config files', async () => {
     const directory = makeDirectory('garbage')
-    writeConfig(directory, 'energy.json', { enabled: 'yes' })
-    writeFileSync(join(directory, '.opencode', 'energy.local.json'), 'not json')
+    writeConfig(directory, '.energy.json', { enabled: 'yes' })
+    writeFileSync(join(directory, '.energy.local.json'), 'not json')
 
     const toggle = await toggleStore({ defaultEnabled: true, directory })
 
@@ -89,6 +88,18 @@ describe('toggleStore', () => {
     expect(rehydrated.enabled()).toBe(false)
   })
 
+  it('should keep the local override outside the .opencode config directory', async () => {
+    const directory = makeDirectory('outside-config')
+    const toggle = await toggleStore({ defaultEnabled: true, directory })
+
+    await toggle.toggle()
+
+    // a write inside .opencode makes opencode reload its config and with it
+    // this plugin, racing the toggle's own reply to the footer icon
+    expect(existsSync(join(directory, '.opencode'))).toBe(false)
+    expect(readLocalOverride(directory)).toEqual({ enabled: false })
+  })
+
   it('should keep folders independent', async () => {
     const first = await toggleStore({ defaultEnabled: true, directory: makeDirectory('first') })
     const second = await toggleStore({ defaultEnabled: true, directory: makeDirectory('second') })
@@ -102,7 +113,7 @@ describe('toggleStore', () => {
   it('should reject and keep the previous state when persisting fails', async () => {
     const directory = makeDirectory('persist-failure')
     // a directory at the override path makes the atomic rename fail
-    const blocking = join(directory, '.opencode', 'energy.local.json')
+    const blocking = join(directory, '.energy.local.json')
     mkdirSync(blocking, { recursive: true })
 
     const toggle = await toggleStore({ defaultEnabled: true, directory })
@@ -110,7 +121,7 @@ describe('toggleStore', () => {
     await expect(toggle.toggle()).rejects.toThrow()
     expect(toggle.enabled()).toBe(true)
     // the failed write leaves no temporary file behind
-    expect(readdirSync(join(directory, '.opencode'))).toEqual(['energy.local.json'])
+    expect(readdirSync(directory)).toEqual(['.energy.local.json'])
 
     rmSync(blocking, { recursive: true, force: true })
 

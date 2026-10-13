@@ -95,14 +95,15 @@ function EnergyIcon(props: { context: Plugin.Context }) {
 
   return (
     <Show when={enabled() !== undefined}>
-      <box flexShrink={0}>
+      <box flexDirection="row" flexShrink={0} marginRight={-1}>
         <text
           fg={props.context.theme.text.feedback.success.base}
           opacity={enabled() ? 1 : 0.4}
           onMouseUp={toggle}
         >
-          ⚡
+          {`⚡ ${enabled() ? 'on' : 'off'}`}
         </text>
+        <text fg={props.context.theme.text.muted}> ·</text>
       </box>
     </Show>
   )

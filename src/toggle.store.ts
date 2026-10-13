@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
+import { readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { debug } from './log.js'
 
@@ -7,11 +7,9 @@ export interface ToggleStore {
   toggle(): Promise<boolean>
 }
 
-const configDirName = '.opencode'
-const committedName = 'energy.json'
-const localName = 'energy.local.json'
+const committedName = '.energy.json'
 
-export const localOverridePath = `${configDirName}/${localName}`
+export const localOverridePath = '.energy.local.json'
 
 /** Temp files of the atomic write; git ignored together with the local override. */
 export const localOverrideTempGlob = `${localOverridePath}.*.tmp`
@@ -50,7 +48,6 @@ async function writeEnabled(directory: string, enabled: boolean): Promise<void> 
   const file = join(directory, localOverridePath)
   const temp = `${file}.${process.pid}.tmp`
 
-  await mkdir(join(directory, configDirName), { recursive: true })
   await writeFile(temp, `${JSON.stringify({ enabled }, null, 2)}\n`)
 
   try {
@@ -66,9 +63,12 @@ async function writeEnabled(directory: string, enabled: boolean): Promise<void> 
 /**
  * Folder level toggle for energy logging.
  *
- * The committed `.opencode/energy.json` is the shared default; the gitignored
- * `.opencode/energy.local.json` overrides it per machine and is the only file
- * the toggle writes.
+ * The committed `.energy.json` is the shared default; the gitignored
+ * `.energy.local.json` overrides it per machine and is the only file
+ * the toggle writes. Both sit at the root of the repository rather than
+ * in `.opencode/`: opencode watches that directory as part of its config,
+ * and the reload a write there triggers would race this toggle's own reply,
+ * leaving the footer icon showing the previous state.
  */
 export async function toggleStore(
   input: {
@@ -79,7 +79,7 @@ export async function toggleStore(
   const { defaultEnabled, directory } = input
 
   const local = await readEnabled(join(directory, localOverridePath))
-  const committed = local === undefined ? await readEnabled(join(directory, configDirName, committedName)) : undefined
+  const committed = local === undefined ? await readEnabled(join(directory, committedName)) : undefined
   let current = local ?? committed ?? defaultEnabled
 
   return {

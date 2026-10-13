@@ -111,42 +111,42 @@ describe.skipIf(!gitAvailable)('ensureIgnored', () => {
   it('should add the path to the repository gitignore', async () => {
     const repo = makeRepo('ignore-repo')
 
-    await ensureIgnored(repo, '.opencode/energy.local.json')
+    await ensureIgnored(repo, '.energy.local.json')
 
-    expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe('.opencode/energy.local.json\n')
-    expect(spawnSync('git', ['-C', repo, 'check-ignore', '-q', '--', '.opencode/energy.local.json']).status).toBe(0)
+    expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe('.energy.local.json\n')
+    expect(spawnSync('git', ['-C', repo, 'check-ignore', '-q', '--', '.energy.local.json']).status).toBe(0)
   })
 
   it('should ignore every given path', async () => {
     const repo = makeRepo('ignore-multi-repo')
 
-    await ensureIgnored(repo, '.opencode/energy.local.json', '.opencode/energy.local.json.*.tmp')
+    await ensureIgnored(repo, '.energy.local.json', '.energy.local.json.*.tmp')
 
     expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe(
-      '.opencode/energy.local.json\n.opencode/energy.local.json.*.tmp\n')
+      '.energy.local.json\n.energy.local.json.*.tmp\n')
 
     // git agrees both the override and a temp file of its atomic write are ignored
-    expect(spawnSync('git', ['-C', repo, 'check-ignore', '-q', '--', '.opencode/energy.local.json']).status).toBe(0)
-    expect(spawnSync('git', ['-C', repo, 'check-ignore', '-q', '--', '.opencode/energy.local.json.123.tmp']).status).toBe(0)
+    expect(spawnSync('git', ['-C', repo, 'check-ignore', '-q', '--', '.energy.local.json']).status).toBe(0)
+    expect(spawnSync('git', ['-C', repo, 'check-ignore', '-q', '--', '.energy.local.json.123.tmp']).status).toBe(0)
   })
 
   it('should not append the path twice', async () => {
     const repo = makeRepo('ignore-twice-repo')
 
-    await ensureIgnored(repo, '.opencode/energy.local.json')
-    await ensureIgnored(repo, '.opencode/energy.local.json')
+    await ensureIgnored(repo, '.energy.local.json')
+    await ensureIgnored(repo, '.energy.local.json')
 
     const gitignore = readFileSync(join(repo, '.gitignore'), 'utf8')
-    expect(gitignore.split('\n').filter(line => line === '.opencode/energy.local.json')).toHaveLength(1)
+    expect(gitignore.split('\n').filter(line => line === '.energy.local.json')).toHaveLength(1)
   })
 
   it('should leave the gitignore untouched when another ignore source covers the path', async () => {
     const repo = makeRepo('ignore-covered-repo')
     const gitignore = join(repo, '.gitignore')
     writeFileSync(gitignore, 'node_modules/\n')
-    appendFileSync(join(repo, '.git', 'info', 'exclude'), '.opencode/energy.local.json\n')
+    appendFileSync(join(repo, '.git', 'info', 'exclude'), '.energy.local.json\n')
 
-    await ensureIgnored(repo, '.opencode/energy.local.json')
+    await ensureIgnored(repo, '.energy.local.json')
 
     expect(readFileSync(gitignore, 'utf8')).toBe('node_modules/\n')
   })
@@ -155,16 +155,16 @@ describe.skipIf(!gitAvailable)('ensureIgnored', () => {
     const repo = makeRepo('ignore-no-newline-repo')
     writeFileSync(join(repo, '.gitignore'), '# build output')
 
-    await ensureIgnored(repo, '.opencode/energy.local.json')
+    await ensureIgnored(repo, '.energy.local.json')
 
-    expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe('# build output\n.opencode/energy.local.json\n')
+    expect(readFileSync(join(repo, '.gitignore'), 'utf8')).toBe('# build output\n.energy.local.json\n')
   })
 
   it('should do nothing outside a git repository', async () => {
     const plain = join(root, 'not-a-repo-ignore')
     mkdirSync(plain)
 
-    await expect(ensureIgnored(plain, '.opencode/energy.local.json')).resolves.toBeUndefined()
+    await expect(ensureIgnored(plain, '.energy.local.json')).resolves.toBeUndefined()
     expect(existsSync(join(plain, '.gitignore'))).toBe(false)
   })
 })

@@ -1,6 +1,6 @@
 node_modules/
 dist/
-.opencode/energy.local.json
+.energy.local.json
 /AGENTS.md
 .idea/
-.opencode/energy.local.json.*.tmp
+.energy.local.json.*.tmp

@@ -123,12 +123,11 @@ function makeContext(options: { directory?: string, hookDelayMs?: number } = {})
 }
 
 function writeConfig(directory: string, name: string, value: unknown): void {
-  mkdirSync(join(directory, '.opencode'), { recursive: true })
-  writeFileSync(join(directory, '.opencode', name), `${JSON.stringify(value, null, 2)}\n`)
+  writeFileSync(join(directory, name), `${JSON.stringify(value, null, 2)}\n`)
 }
 
 function readLocalOverride(directory: string): unknown {
-  return JSON.parse(readFileSync(join(directory, '.opencode', 'energy.local.json'), 'utf8'))
+  return JSON.parse(readFileSync(join(directory, '.energy.local.json'), 'utf8'))
 }
 
 function sessionStates(): string[] {
@@ -316,7 +315,7 @@ describe('plugin', () => {
 
   it('should not register the http hooks when the folder state starts disabled', async () => {
     const { context, sessionHooks, directory } = makeContext()
-    writeConfig(directory, 'energy.local.json', { enabled: false })
+    writeConfig(directory, '.energy.local.json', { enabled: false })
     await plugin.setup(context)
 
     expect(sessionHooks).toEqual([])
@@ -337,7 +336,7 @@ describe('plugin', () => {
 
   it('should dispose the http hooks even when a disable toggle arrives while the hooks are registering', async () => {
     const { context, sessionHooks, rpcHandlers, directory } = makeContext({ hookDelayMs: 50 })
-    writeConfig(directory, 'energy.local.json', { enabled: false })
+    writeConfig(directory, '.energy.local.json', { enabled: false })
     await plugin.setup(context)
 
     const enabling = rpcHandlers.toggle({})
@@ -375,7 +374,7 @@ describe('plugin', () => {
     await plugin.setup(context)
 
     // a directory at the override path makes the atomic rename fail
-    const blocking = join(directory, '.opencode', 'energy.local.json')
+    const blocking = join(directory, '.energy.local.json')
     mkdirSync(blocking, { recursive: true })
 
     const error: RpcErrorFactory = (type, message, data) => ({ type, message, data })
@@ -421,7 +420,7 @@ describe('plugin', () => {
 
   it('should read the committed config at the repository root when the directory is inside a repository', async () => {
     const { directory: repo } = makeContext()
-    writeConfig(repo, 'energy.json', { enabled: false })
+    writeConfig(repo, '.energy.json', { enabled: false })
     const nested = join(repo, 'nested')
     mkdirSync(nested, { recursive: true })
 
@@ -439,7 +438,7 @@ describe('plugin', () => {
 
     await rpcHandlers.toggle({})
 
-    expect(mockedEnsureIgnored).toHaveBeenCalledWith(directory, '.opencode/energy.local.json', '.opencode/energy.local.json.*.tmp')
+    expect(mockedEnsureIgnored).toHaveBeenCalledWith(directory, '.energy.local.json', '.energy.local.json.*.tmp')
     expect(readLocalOverride(directory)).toEqual({ enabled: false })
   })
 

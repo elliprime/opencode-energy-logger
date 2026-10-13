@@ -10,11 +10,14 @@ icon in opencode's footer status bar. The state is looked up at the root of the 
 repository containing the folder (the folder itself outside a repository),
 from the first of:
 
-1. `.opencode/energy.local.json` — per machine override, written by every
+1. `.energy.local.json` — per machine override, written by every
    toggle. Inside a repository the path is appended to `.gitignore` when
    first written, a one time change to commit, so the override stays out of
-   `git status` in every clone.
-2. `.opencode/energy.json` — committed default shared with the repository:
+   `git status` in every clone. The file sits at the root of the repository
+   rather than in `.opencode/`: opencode watches that directory as part of
+   its config, and the reload a write there triggers would race the
+   toggle's own reply, leaving the footer icon showing the previous state.
+2. `.energy.json` — committed default shared with the repository:
 
    ```json
    { "enabled": false }
