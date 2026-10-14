@@ -5,10 +5,11 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
-  // Override default ignores of eslint-config-next.
+  // override default ignores of eslint-config-next
   globalIgnores([
-    // Default ignores of eslint-config-next:
-    ".next/**",
+    // ignores of eslint-config-next ('.next' at any depth, in
+    // case Turbopack ever writes to a nested root):
+    "**/.next/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
