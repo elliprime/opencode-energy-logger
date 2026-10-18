@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "**/.next/**",
     "out/**",
     "build/**",
+    // wasm/worker assets copied from node_modules by
+    // scripts/copy-wasm-assets.mjs:
+    "public/**",
     "next-env.d.ts",
   ]),
 ]);

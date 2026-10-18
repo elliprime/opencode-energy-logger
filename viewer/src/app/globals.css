@@ -1,1 +1,10 @@
 @import "tailwindcss";
+
+/*
+ * Perspective ships its viewer with a 12px base font, which the
+ * datagrid inherits for cells and headers. Bump it to the app's
+ * standard text size so the report reads like the rest of the page.
+ */
+perspective-viewer {
+  font-size: var(--text-sm, 0.875rem);
+}

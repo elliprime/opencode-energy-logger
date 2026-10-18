@@ -67,7 +67,7 @@ function parseRepositoryUrl(input: string): RepositoryLocation {
   const segments = url.pathname
     .split('/')
     .filter(segment => segment.length > 0)
-    .map(segment => decodeURIComponent(segment))
+    .map(segment => decodeSegment(segment, input))
   if (segments.length < 2) {
     throw new EnergySourceError(`Not a repository URL, expected e.g. https://github.com/owner/repository: ${input}`)
   }
@@ -118,6 +118,15 @@ function parseRepositoryUrl(input: string): RepositoryLocation {
 
 function isGitHub(host: string): boolean {
   return host === 'github.com' || host.endsWith('.github.com')
+}
+
+function decodeSegment(segment: string, input: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    // report as an error that appears in the UI
+    throw new EnergySourceError(`Not a valid URL: ${input}`)
+  }
 }
 
 /**

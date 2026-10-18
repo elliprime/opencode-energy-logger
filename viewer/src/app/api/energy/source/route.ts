@@ -25,9 +25,15 @@ export async function POST(request: Request) {
   }
 }
 
-const URL_LIKE = /^(?:https?:\/\/|www\.)|[a-z0-9-]+(?:\.[a-z0-9-]+)+\//i
+const URL_LIKE = /^(?:https?:\/\/|www\.)|^[a-z0-9-]+(?:\.[a-z0-9-]+)+\//i
 
 function isUrlLike(input: string): boolean {
+  // absolute paths, ~ paths and relative paths starting with ./ are never
+  // URLs
+  if (input.startsWith('/') || input.startsWith('~') || input.startsWith('.')) {
+    return false
+  }
+
   return URL_LIKE.test(input)
 }
 

@@ -1,7 +1,19 @@
 'use client'
 
+import dynamic from 'next/dynamic'
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
-import { EnergyFileList } from './energy-file-list'
+
+const EnergyReport = dynamic(
+  () => import('./energy-report').then(mod => mod.EnergyReport),
+  {
+    ssr: false,
+    loading: () => (
+      <section className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs">
+        <p className="text-base text-zinc-500">Loading the report…</p>
+      </section>
+    ),
+  }
+)
 
 interface Analysis {
   source: string
@@ -9,10 +21,10 @@ interface Analysis {
 }
 
 const BUTTON_CLASS =
-  'self-start rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50'
+  'self-start rounded-md bg-emerald-600 px-4 py-2 text-base font-medium text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50'
 
 const TEXT_INPUT_CLASS =
-  'w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 placeholder:text-zinc-400 focus:border-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-500'
+  'w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-base text-zinc-900 placeholder:text-zinc-400 focus:border-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:bg-zinc-100 disabled:text-zinc-500'
 
 export function EnergyDirectoryPicker() {
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
@@ -21,6 +33,10 @@ export function EnergyDirectoryPicker() {
   const [sourceInput, setSourceInput] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+
+  // bumped on every successful analysis, so the report remounts and
+  // reloads even when the same directory is analyzed again
+  const [analysisId, setAnalysisId] = useState(0)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -56,6 +72,7 @@ export function EnergyDirectoryPicker() {
         throw new Error('The server sent an unexpected response')
       }
 
+      setAnalysisId(id => id + 1)
       setAnalysis({ source: body.source, filenames: body.filenames })
     } catch (caught) {
       setAnalysis(null)
@@ -112,7 +129,7 @@ export function EnergyDirectoryPicker() {
         onSubmit={handleSubmit}
         className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xs"
       >
-        <h2 className="text-sm font-semibold text-zinc-900">Choose an energy directory</h2>
+        <h2 className="text-base font-semibold text-zinc-900">Choose an energy directory</h2>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <div className="relative flex-1">
             <input
@@ -151,10 +168,10 @@ export function EnergyDirectoryPicker() {
             accept=".zip,.tar.gz,.tgz"
             disabled={busy}
             onChange={handleFileChange}
-            className="w-full text-sm text-zinc-700 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-zinc-100 file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-zinc-800 hover:file:bg-zinc-200 sm:w-auto sm:flex-none"
+            className="w-full text-base text-zinc-700 file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-zinc-100 file:px-3 file:py-1.5 file:text-base file:font-medium file:text-zinc-800 hover:file:bg-zinc-200 sm:w-auto sm:flex-none"
           />
         </div>
-        <p className="text-xs text-zinc-500">
+        <p className="text-sm text-zinc-500">
           A local folder, a GitHub or Forgejo repository link, or a .zip or .tar.gz archive containing
           a .energy folder or ses_*.jsonl files.
         </p>
@@ -163,13 +180,19 @@ export function EnergyDirectoryPicker() {
         </button>
       </form>
 
-      {busy ? <p className="text-sm text-zinc-500">Analyzing…</p> : null}
+      {busy ? <p className="text-base text-zinc-500">Analyzing…</p> : null}
       {error !== null ? (
-        <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+        <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-base text-red-800">
           {error}
         </p>
       ) : null}
-      {analysis !== null ? <EnergyFileList source={analysis.source} filenames={analysis.filenames} /> : null}
+      {analysis !== null ? (
+        <EnergyReport
+          key={analysisId}
+          filenames={analysis.filenames}
+          source={analysis.source}
+        />
+      ) : null}
     </div>
   )
 }
