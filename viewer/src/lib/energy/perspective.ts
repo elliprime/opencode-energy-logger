@@ -440,3 +440,13 @@ export async function getEnergyClient(): Promise<EnergyClient> {
   const port = await createMessageHandler(handler)
   return worker(Promise.resolve(port))
 }
+
+/**
+ * Runs a SQL query against the DuckDB database that `loadEnergyFiles`
+ * filled.
+ */
+export async function queryEnergy(sql: string): Promise<Array<Record<string, unknown>>> {
+  const conn = await getConnection()
+  const table = await conn.query(sql)
+  return table.toArray() as Array<Record<string, unknown>>
+}
