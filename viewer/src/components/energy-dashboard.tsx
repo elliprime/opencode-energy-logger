@@ -6,8 +6,14 @@ import {
   type DashboardStats,
   type GroupEnergy,
 } from '@/lib/energy/stats'
-
-const JOULES_PER_KWH = 3_600_000
+import {
+  JOULES_PER_KWH,
+  formatCarbon,
+  formatJoules,
+  formatKwh,
+  formatSignificant,
+} from '@/lib/energy/format'
+import { PromptChronology } from '@/components/prompt-chronology'
 
 export function EnergyDashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
@@ -95,6 +101,8 @@ export function EnergyDashboard() {
         <BreakdownList title="Energy by model" groups={byModel} />
         <BreakdownList title="Energy by agent" groups={byAgent} />
       </div>
+
+      <PromptChronology />
     </div>
   )
 }
@@ -141,31 +149,6 @@ function BreakdownList({ title, groups }: { title: string; groups: readonly Grou
       )}
     </section>
   )
-}
-
-function formatSignificant(value: number): string {
-  return new Intl.NumberFormat('en-US', { maximumSignificantDigits: 3 }).format(value)
-}
-
-function formatKwh(kwh: number): string {
-  return `${formatSignificant(kwh)} kWh`
-}
-
-function formatJoules(kwh: number): string {
-  const joules = kwh * JOULES_PER_KWH
-  if (joules >= 1e9) return `${formatSignificant(joules / 1e9)} GJ`
-  if (joules >= 1e6) return `${formatSignificant(joules / 1e6)} MJ`
-  if (joules >= 1e3) return `${formatSignificant(joules / 1e3)} kJ`
-  return `${formatSignificant(joules)} J`
-}
-
-function formatCarbon(carbonG: number | null): string {
-  if (carbonG === null) {
-    return '—'
-  }
-  return carbonG >= 1000
-    ? `${formatSignificant(carbonG / 1000)} kg CO₂e`
-    : `${formatSignificant(carbonG)} g CO₂e`
 }
 
 function formatWatts(watts: number): string {

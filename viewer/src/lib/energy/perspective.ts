@@ -10,7 +10,12 @@
  *   read from.
  * - `energy_samples`: the `energy` array of every record flattened
  *   into one row per measured energy sample, joined with the fields of
- *   its parent record.
+ *   its parent record. Both tables share the `energy_log_id` column —
+ *   the id of the energy log a row belongs to; there is no per-sample
+ *   id.
+ *
+ *   Note: the energy_samples table is denormalized primarily because
+ *   perspective.js does not support JOINs.
  *
  * Perspective's DuckDB virtual server then translates whatever report
  * the user configures in the `<perspective-viewer>` UI into DuckDB
@@ -87,7 +92,7 @@ const DUCKDB_BUNDLES: duckdb.DuckDBBundles = {
 /** One record of an energy JSONL file, with its measured samples. */
 interface EnergyRecord {
   readonly time?: unknown
-  readonly id?: unknown
+  id?: unknown
   readonly energy?: unknown
   sessionID?: unknown
   [key: string]: unknown
@@ -103,7 +108,7 @@ const RECORD_FIELDS = [
   'branch',
   'url',
   'prompt',
-  'id',
+  'energy_log_id',
   'type',
 ]
 
@@ -207,6 +212,16 @@ function withSessionId(record: EnergyRecord, sessionId: string): EnergyRecord {
   const copy: EnergyRecord = { ...record }
   delete copy.sessionID
   copy.session_id = sessionId
+  return copy
+}
+
+/**
+ * Renames the record's `id` field to `energy_log_id`.
+ */
+function withEnergyLogId(record: EnergyRecord): EnergyRecord {
+  const copy: EnergyRecord = { ...record }
+  copy.energy_log_id = copy.id
+  delete copy.id
   return copy
 }
 
@@ -389,7 +404,7 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
       return parseJsonl(text).map(record => withSessionId(record, sessionId))
     })
 
-    const deduped = dedupeRecords(records)
+    const deduped = dedupeRecords(records).map(withEnergyLogId)
     if (deduped.length === 0) {
       throw new Error('The energy files contain no energy records')
     }
@@ -445,8 +460,22 @@ export async function getEnergyClient(): Promise<EnergyClient> {
  * Runs a SQL query against the DuckDB database that `loadEnergyFiles`
  * filled.
  */
-export async function queryEnergy(sql: string): Promise<Array<Record<string, unknown>>> {
+export async function queryEnergy(
+  sql: string,
+  params?: unknown[],
+): Promise<Array<Record<string, unknown>>> {
   const conn = await getConnection()
-  const table = await conn.query(sql)
-  return table.toArray() as Array<Record<string, unknown>>
+
+  if (params === undefined || params.length === 0) {
+    const table = await conn.query(sql)
+    return table.toArray() as Array<Record<string, unknown>>
+  }
+
+  const statement = await conn.prepare(sql)
+  try {
+    const table = await statement.query(...params)
+    return table.toArray() as Array<Record<string, unknown>>
+  } finally {
+    await statement.close()
+  }
 }
