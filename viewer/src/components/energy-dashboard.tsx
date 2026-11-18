@@ -102,6 +102,8 @@ export function EnergyDashboard() {
         <BreakdownList title="Energy by agent" groups={byAgent} />
       </div>
 
+      <hr className={"text-zinc-200"}/>
+
       <PromptChronology />
     </div>
   )

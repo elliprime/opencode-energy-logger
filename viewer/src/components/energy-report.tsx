@@ -64,20 +64,19 @@ export function EnergyReport({ filenames, source }: EnergyReportProps) {
   }
 
   return (
-    <section className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xs">
-      <div className="flex items-baseline justify-between gap-4">
-        <h2 className="text-base font-semibold text-zinc-900">Energy report</h2>
+    <section className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xs relative">
+      <div className="flex items-baseline justify-between gap-4 absolute" style={{top: '20px', right: '20px'}}>
         {busy ? (
           <span className="text-sm text-zinc-500">
             Loading {filenames.length} {filenames.length === 1 ? 'file' : 'files'}…
           </span>
         ) : (
-          <span
-            className="truncate font-mono text-sm text-zinc-500"
+          <div
+            className="truncate font-mono text-sm text-zinc-500 text-right grow"
             title={`${filenames.length} ${filenames.length === 1 ? 'file' : 'files'} from ${source}`}
           >
             {filenames.length} {filenames.length === 1 ? 'file' : 'files'} · {source}
-          </span>
+          </div>
         )}
       </div>
       <div role="tablist" aria-label="Report views" className="flex gap-2">
