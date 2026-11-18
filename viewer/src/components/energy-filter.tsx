@@ -1,0 +1,260 @@
+'use client'
+
+import { useEffect, useRef, useState } from 'react'
+import type {
+  EnergyFilter,
+  EnergyFilterCondition,
+  EnergyFilterMatch,
+  FilterDimension,
+} from '@/lib/energy/stats'
+
+/** A dimension with few distinct values matches exactly; free text matches as a substring. */
+function matchFor(dimensions: readonly FilterDimension[], name: string): EnergyFilterMatch {
+  const dimension = dimensions.find(candidate => candidate.name === name)
+  return dimension !== undefined && dimension.values !== null ? 'exact' : 'contains'
+}
+
+interface EnergyFilterBarProps {
+  /** The dimensions the loaded records can be filtered by. */
+  readonly dimensions: readonly FilterDimension[]
+
+  /** The filter currently applied to the dashboard. */
+  readonly filter: EnergyFilter
+
+  /** Receives the edited filter when the dropdown closes. */
+  readonly onChange: (filter: EnergyFilter) => void
+}
+
+/**
+ * The dashboard's filter dropdown. Collapsed it summarizes the
+ * applied dimension/value conditions at its top; expanded it allows editing
+ * of the applied filter. For dimensions with few distinct values, a <select>
+ * is used, for others a free text input that checks for values that contain
+ * what was inputted.
+ */
+export function EnergyFilterBar({ dimensions, filter, onChange }: EnergyFilterBarProps) {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState<readonly EnergyFilterCondition[]>(filter)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    function close(propagateChange: boolean): void {
+      setOpen(false)
+      if (propagateChange) {
+        onChange(draft.filter(condition => condition.value !== ''))
+      }
+    }
+
+    function onPointerDown(event: PointerEvent): void {
+      if (
+        containerRef.current !== null &&
+        event.target instanceof Node &&
+        !containerRef.current.contains(event.target)
+      ) {
+        close(false)
+      }
+    }
+
+    function onKeyDown(event: KeyboardEvent): void {
+      if (event.key === 'Escape') {
+        close(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open, draft, onChange])
+
+  function toggle(propagate = false): void {
+    if (open) {
+      setOpen(false)
+      if (propagate) {
+        onChange(draft.filter(condition => condition.value !== ''))
+      }
+      return
+    }
+
+    setDraft(filter)
+    setOpen(true)
+  }
+
+  function addCondition(): void {
+    const dimension = dimensions.find(
+      candidate => !draft.some(condition => condition.dimension === candidate.name),
+    )
+    if (dimension === undefined) {
+      return
+    }
+    setDraft(current => [
+      ...current,
+      { dimension: dimension.name, value: '', match: matchFor(dimensions, dimension.name) },
+    ])
+  }
+
+  const canAddCondition = dimensions.some(
+    dimension => !draft.some(condition => condition.dimension === dimension.name),
+  )
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => toggle()}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 transition-colors hover:bg-zinc-50"
+      >
+        <span className="flex-none font-medium text-zinc-700">Filter</span>
+        {filter.length === 0 ? (
+          <span className="truncate text-zinc-400">none — all records included</span>
+        ) : (
+          <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+            {filter.map((condition, index) => (
+              <span key={index} className="flex items-center gap-1.5">
+                {index > 0 ? (
+                  <span className="text-xs italic text-zinc-400" title="conditions are AND'ed">
+                    and
+                  </span>
+                ) : null}
+                <span
+                  className="max-w-56 truncate rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-xs text-zinc-700"
+                  title={`${condition.dimension} ${condition.match === 'exact' ? 'is' : 'contains'} "${condition.value}"`}
+                >
+                  {condition.dimension} {condition.match === 'exact' ? '=' : '~'} {condition.value}
+                </span>
+              </span>
+            ))}
+          </span>
+        )}
+        <span className="ml-auto flex-none text-xs text-zinc-400" aria-hidden="true">
+          {open ? '▼' : '▶'}
+        </span>
+      </button>
+
+      {open ? (
+        <div className="absolute inset-x-0 top-full z-30 mt-1 rounded-md border border-zinc-200 bg-white p-3 shadow-xl">
+          <p className="text-xs text-zinc-500">
+            Records enter the dashboard when every condition matches — dimensions with a value
+            list match exactly, text values match as case-insensitive substrings.
+          </p>
+          {draft.length === 0 ? (
+            <p className="mt-2 text-sm text-zinc-500">No conditions — all records are included.</p>
+          ) : (
+            <div className="mt-2 flex flex-col gap-2">
+              {draft.map((condition, index) => (
+                <FilterConditionRow
+                  key={index}
+                  condition={condition}
+                  dimensions={dimensions}
+                  onChange={updated =>
+                    setDraft(current => current.map((c, i) => (i === index ? updated : c)))
+                  }
+                  onRemove={() => setDraft(current => current.filter((_, i) => i !== index))}
+                />
+              ))}
+            </div>
+          )}
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={addCondition}
+              disabled={!canAddCondition}
+              className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Add condition
+            </button>
+            <button
+              type="button"
+              onClick={() => toggle(true)}
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-emerald-700"
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function FilterConditionRow({
+  condition,
+  dimensions,
+  onChange,
+  onRemove,
+}: {
+  condition: EnergyFilterCondition
+  dimensions: readonly FilterDimension[]
+  onChange: (condition: EnergyFilterCondition) => void
+  onRemove: () => void
+}) {
+  const dimension = dimensions.find(candidate => candidate.name === condition.dimension)
+
+  // a condition may name a dimension the loaded records no longer
+  // carry; keep it selectable so it can still be edited or removed
+  const dimensionNames = dimensions.some(candidate => candidate.name === condition.dimension)
+    ? dimensions.map(candidate => candidate.name)
+    : [condition.dimension, ...dimensions.map(candidate => candidate.name)]
+
+  function selectDimension(name: string): void {
+    // one dimension's value means nothing for another, and the new
+    // dimension may match by a different mode
+    onChange({ dimension: name, value: '', match: matchFor(dimensions, name) })
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <select
+        aria-label="Dimension"
+        value={condition.dimension}
+        onChange={event => selectDimension(event.target.value)}
+        className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900"
+      >
+        {dimensionNames.map(name => (
+          <option key={name} value={name}>
+            {name}
+          </option>
+        ))}
+      </select>
+      {dimension !== undefined && dimension.values !== null ? (
+        <select
+          aria-label="Value"
+          value={condition.value}
+          onChange={event => onChange({ ...condition, value: event.target.value })}
+          className="min-w-40 grow rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900"
+        >
+          <option value="">Select a value…</option>
+          {dimension.values.map(value => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <input
+          type="text"
+          aria-label="Value"
+          value={condition.value}
+          placeholder="contains…"
+          onChange={event => onChange({ ...condition, value: event.target.value })}
+          className="min-w-40 grow rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900"
+        />
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label="Remove condition"
+        className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-500 transition-colors hover:bg-zinc-100"
+      >
+        Remove
+      </button>
+    </div>
+  )
+}

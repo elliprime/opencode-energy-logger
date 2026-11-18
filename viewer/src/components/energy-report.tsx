@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { loadEnergyFiles, type LoadedEnergyColumns } from '@/lib/energy/perspective'
+import { listFilterDimensions, type EnergyFilter, type FilterDimension } from '@/lib/energy/stats'
 import { EnergyDashboard } from './energy-dashboard'
+import { EnergyFilterBar } from './energy-filter'
 import { RawDataReport } from './raw-data-report'
 
 type ReportTab = 'dashboard' | 'raw-data'
@@ -29,6 +31,8 @@ export function EnergyReport({ filenames, source }: EnergyReportProps) {
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [columns, setColumns] = useState<LoadedEnergyColumns | null>(null)
+  const [dimensions, setDimensions] = useState<readonly FilterDimension[] | null>(null)
+  const [filter, setFilter] = useState<EnergyFilter>([])
 
   // load all energy files into DuckDB, shared by both tabs
   useEffect(() => {
@@ -55,6 +59,30 @@ export function EnergyReport({ filenames, source }: EnergyReportProps) {
       cancelled = true
     }
   }, [filenames])
+
+  // the filterable dimensions of the loaded records, for the filter bar
+  useEffect(() => {
+    if (columns === null) {
+      return
+    }
+
+    let cancelled = false
+    listFilterDimensions()
+      .then(result => {
+        if (!cancelled) {
+          setDimensions(result)
+        }
+      })
+      .catch(caught => {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : 'Something went wrong')
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [columns])
 
   function selectTab(id: ReportTab) {
     setTab(id)
@@ -98,6 +126,9 @@ export function EnergyReport({ filenames, source }: EnergyReportProps) {
           </button>
         ))}
       </div>
+      {tab === 'dashboard' && dimensions !== null ? (
+        <EnergyFilterBar dimensions={dimensions} filter={filter} onChange={setFilter} />
+      ) : null}
       {error !== null ? (
         <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-base text-red-800">
           {error}
@@ -106,7 +137,7 @@ export function EnergyReport({ filenames, source }: EnergyReportProps) {
       {columns !== null ? (
         <>
           <div role="tabpanel" hidden={tab !== 'dashboard'}>
-            <EnergyDashboard />
+            <EnergyDashboard filter={filter} />
           </div>
           {rawDataVisited ? (
             <div role="tabpanel" hidden={tab !== 'raw-data'}>

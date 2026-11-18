@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import {
   computeDashboardStats,
   type DashboardStats,
+  type EnergyFilter,
   type GroupEnergy,
 } from '@/lib/energy/stats'
 import {
@@ -15,13 +16,18 @@ import {
 } from '@/lib/energy/format'
 import { PromptChronology } from '@/components/prompt-chronology'
 
-export function EnergyDashboard() {
+interface EnergyDashboardProps {
+  /** The filter restricting which records the dashboard's metrics use. */
+  readonly filter: EnergyFilter
+}
+
+export function EnergyDashboard({ filter }: EnergyDashboardProps) {
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
-    computeDashboardStats()
+    computeDashboardStats(filter)
       .then(result => {
         if (!cancelled) {
           setStats(result)
@@ -36,7 +42,7 @@ export function EnergyDashboard() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [filter])
 
   if (error !== null) {
     return (

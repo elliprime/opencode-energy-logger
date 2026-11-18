@@ -5,6 +5,7 @@ import {
   getEnergyRecords,
   listSessionPrompts,
   listSessions,
+  type EnergyFilter,
   type SessionPrompt,
   type SessionSummary,
 } from '@/lib/energy/stats'
@@ -58,7 +59,7 @@ export function PromptChronology() {
     return () => {
       cancelled = true
     }
-  }, [])
+  })
 
   useEffect(() => {
     if (selected === '') {

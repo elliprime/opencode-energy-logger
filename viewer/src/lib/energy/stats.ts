@@ -107,7 +107,13 @@ function toStringOrNull(value: unknown): string | null {
 }
 
 /** Energy grouped by a record field, both must exist as columns. */
-async function groupBy(column: string, energy: string, carbon: string | null): Promise<GroupEnergy[]> {
+async function groupBy(
+  column: string,
+  energy: string,
+  carbon: string | null,
+  filter: EnergyFilter,
+): Promise<GroupEnergy[]> {
+  const { condition, params } = samplesFilter(filter)
   const rows = await queryEnergy(`
     SELECT
       ${column} AS label,
@@ -115,10 +121,10 @@ async function groupBy(column: string, energy: string, carbon: string | null): P
       ${sumAs(carbon, 'carbon_g')},
       CAST(COUNT(*) AS INT) AS samples
     FROM energy_samples
-    WHERE ${column} IS NOT NULL
+    ${whereSql([`${column} IS NOT NULL`, condition])}
     GROUP BY ${column}
     ORDER BY kwh DESC
-  `)
+  `, params)
 
   return rows.map(row => ({
     label: toStringValue(row['label']),
@@ -132,7 +138,7 @@ async function groupBy(column: string, energy: string, carbon: string | null): P
  * The aggregates the dashboard tab shows. Must only be called after
  * `loadEnergyFiles` filled the tables.
  */
-export async function computeDashboardStats(): Promise<DashboardStats> {
+export async function computeDashboardStats(filter: EnergyFilter = []): Promise<DashboardStats> {
   const described = await queryEnergy('DESCRIBE energy_samples;')
   const columns = new Set(described.map(row => String(row['column_name'])))
 
@@ -142,6 +148,11 @@ export async function computeDashboardStats(): Promise<DashboardStats> {
   }
   const carbon = columns.has('carbon_g_co2eq') ? 'carbon_g_co2eq' : null
   const duration = columns.has('duration_seconds') ? 'duration_seconds' : null
+
+  const describedEvents = await queryEnergy('DESCRIBE energy_events;')
+  const eventColumns = new Set(describedEvents.map(row => String(row['column_name'])))
+  const samples = samplesFilter(filter)
+  const events = eventsFilter(filter, eventColumns)
 
   const [totalRows, countRows, byModel, byAgent] = await Promise.all([
     queryEnergy(`
@@ -153,15 +164,17 @@ export async function computeDashboardStats(): Promise<DashboardStats> {
         CAST(MIN(strftime(time, '%Y-%m-%d')) AS VARCHAR) AS first_day,
         CAST(MAX(strftime(time, '%Y-%m-%d')) AS VARCHAR) AS last_day
       FROM energy_samples
-    `),
+      ${whereSql([samples.condition])}
+    `, samples.params),
     queryEnergy(`
       SELECT
         CAST(COUNT(*) AS INT) AS requests,
         CAST(COUNT(DISTINCT session_id) AS INT) AS sessions
       FROM energy_events
-    `),
-    groupBy('model', energy, carbon),
-    groupBy('agent', energy, carbon),
+      ${whereSql([events.condition])}
+    `, events.params),
+    groupBy('model', energy, carbon, filter),
+    groupBy('agent', energy, carbon, filter),
   ])
 
   const totalsRow = totalRows[0]
@@ -183,21 +196,177 @@ export async function computeDashboardStats(): Promise<DashboardStats> {
   }
 }
 
+/** How a filter condition's value matches: exactly, or as a substring. */
+export type EnergyFilterMatch = 'exact' | 'contains'
+
+/** One condition of the dashboard filter: a dimension and the value it must match. */
+export interface EnergyFilterCondition {
+  readonly dimension: string
+  readonly value: string
+  readonly match: EnergyFilterMatch
+}
+
+/** The dashboard's filter: its conditions are AND'ed together. */
+export type EnergyFilter = readonly EnergyFilterCondition[]
+
 /**
- * The sessions of the loaded records, earliest first. Must only be
- * called after `loadEnergyFiles` filled the tables.
+ * A column the records can be filtered by. Dimensions with few
+ * distinct values carry them for use in a select input; the others are
+ * matched by free text.
  */
-export async function listSessions(): Promise<readonly SessionSummary[]> {
+export interface FilterDimension {
+  readonly name: string
+  readonly values: readonly string[] | null
+}
+
+/**
+ * Columns that measure rather than describe — plus the keys and
+ * timestamps — are never offered as filter dimensions.
+ */
+const NON_DIMENSION_COLUMNS = new Set([
+  'type',
+  'time',
+  'energy_log_id',
+  'energy_samples',
+  'energy_joules',
+  'energy_kwh',
+  'avg_power_watts',
+  'duration_seconds',
+  'attribution_method',
+  'attribution_ratio',
+  'carbon_g_co2eq',
+  'grid_carbon_intensity_gco2perkwhr',
+  'grid_id',
+  'carbon_source',
+])
+
+/** A dimension with more distinct values than this is matched by free text. */
+const LIMITED_VALUE_COUNT = 25
+
+/** Dimension names are interpolated into SQL, so they must look like identifiers. */
+const DIMENSION_NAME_PATTERN = /^[a-z_][a-z0-9_]*$/
+
+/** A filter's conditions as SQL, with its bound parameters. */
+interface FilterSql {
+  readonly condition: string
+  readonly params: string[]
+}
+
+function activeConditions(filter: EnergyFilter): readonly EnergyFilterCondition[] {
+  return filter.filter(condition => condition.value !== '')
+}
+
+function dimensionClause(condition: EnergyFilterCondition): string {
+  if (!DIMENSION_NAME_PATTERN.test(condition.dimension)) {
+    throw new Error(`Invalid filter dimension: ${condition.dimension}`)
+  }
+  return condition.match === 'exact'
+    ? `LOWER(${condition.dimension}) = ?`
+    : `LOWER(${condition.dimension}) LIKE ? ESCAPE '\\'`
+}
+
+function dimensionParam(condition: EnergyFilterCondition): string {
+  if (condition.match === 'exact') {
+    return condition.value.toLowerCase()
+  }
+  // %, _ and \ are LIKE wildcards; escape them so the value matches literally
+  const escaped = condition.value.toLowerCase().replace(/[\\%_]/g, char => `\\${char}`)
+  return `%${escaped}%`
+}
+
+/** The filter as conditions on `energy_samples` rows. */
+function samplesFilter(filter: EnergyFilter): FilterSql {
+  const active = activeConditions(filter)
+  return {
+    condition: active.map(dimensionClause).join(' AND '),
+    params: active.map(dimensionParam),
+  }
+}
+
+/**
+ * The filter as conditions on `energy_events` rows: conditions whose
+ * dimension the table carries apply directly; the rest keep the logs
+ * whose samples match.
+ */
+function eventsFilter(filter: EnergyFilter, eventColumns: ReadonlySet<string>): FilterSql {
+  const direct = activeConditions(filter).filter(condition => eventColumns.has(condition.dimension))
+  const viaSamples = activeConditions(filter).filter(condition => !eventColumns.has(condition.dimension))
+
+  const conditions: string[] = []
+  const params: string[] = []
+  if (direct.length > 0) {
+    conditions.push(direct.map(dimensionClause).join(' AND '))
+    params.push(...direct.map(dimensionParam))
+  }
+  if (viaSamples.length > 0) {
+    conditions.push(
+      `energy_log_id IN (SELECT energy_log_id FROM energy_samples WHERE ${viaSamples
+        .map(dimensionClause)
+        .join(' AND ')})`,
+    )
+    params.push(...viaSamples.map(dimensionParam))
+  }
+
+  return { condition: conditions.join(' AND '), params }
+}
+
+/** The present conditions as a WHERE clause, empty when there are none. */
+function whereSql(conditions: readonly string[]): string {
+  const present = conditions.filter(condition => condition !== '')
+  return present.length === 0 ? '' : ` WHERE ${present.join(' AND ')}`
+}
+
+/**
+ * The filterable dimensions of the loaded records: the string columns
+ * of `energy_samples` that describe the sample or its log. Must only
+ * be called after `loadEnergyFiles` filled the tables.
+ */
+export async function listFilterDimensions(): Promise<readonly FilterDimension[]> {
+  const described = await queryEnergy('DESCRIBE energy_samples;')
+  const names = described
+    .filter(
+      row =>
+        String(row['column_type']).toUpperCase() === 'VARCHAR' &&
+        DIMENSION_NAME_PATTERN.test(String(row['column_name'])) &&
+        !NON_DIMENSION_COLUMNS.has(String(row['column_name'])),
+    )
+    .map(row => String(row['column_name']))
+
+  return Promise.all(
+    names.map(async name => {
+      const rows = await queryEnergy(`
+        SELECT DISTINCT ${name} AS value
+        FROM energy_samples
+        WHERE ${name} IS NOT NULL
+        ORDER BY value
+        LIMIT ${LIMITED_VALUE_COUNT + 1}
+      `)
+      const values = rows.map(row => toStringValue(row['value']))
+      return { name, values: values.length <= LIMITED_VALUE_COUNT ? values : null }
+    }),
+  )
+}
+
+/**
+ * The sessions of the loaded records, earliest first — only sessions
+ * with records matching the filter. Must only be called after
+ * `loadEnergyFiles` filled the tables.
+ */
+export async function listSessions(filter: EnergyFilter = []): Promise<readonly SessionSummary[]> {
+  const describedEvents = await queryEnergy('DESCRIBE energy_events;')
+  const eventColumns = new Set(describedEvents.map(row => String(row['column_name'])))
+  const { condition, params } = eventsFilter(filter, eventColumns)
+
   const rows = await queryEnergy(`
     SELECT
       session_id AS session_id,
       CAST(COUNT(*) AS INT) AS requests,
       CAST(MIN(time) AS VARCHAR) AS first_time
     FROM energy_events
-    WHERE session_id IS NOT NULL
+    ${whereSql(['session_id IS NOT NULL', condition])}
     GROUP BY session_id
     ORDER BY first_time
-  `)
+  `, params)
 
   return rows.map(row => ({
     sessionId: toStringValue(row['session_id']),
@@ -260,13 +429,20 @@ function collapsePromptRuns(rows: readonly PromptRow[]): SessionPrompt[] {
  * the queries one agent loop made for it — are collapsed into a
  * single entry with the run's energy totals.
  */
-export async function listSessionPrompts(sessionId: string): Promise<readonly SessionPrompt[]> {
+export async function listSessionPrompts(
+  sessionId: string,
+  filter: EnergyFilter = [],
+): Promise<readonly SessionPrompt[]> {
   // the energy and carbon columns live on the flattened samples, and
   // vary with the format the logger wrote
   const described = await queryEnergy('DESCRIBE energy_samples;')
   const columns = new Set(described.map(row => String(row['column_name'])))
   const energy = energyExpression(columns)
   const carbon = columns.has('carbon_g_co2eq') ? 'carbon_g_co2eq' : null
+
+  const describedEvents = await queryEnergy('DESCRIBE energy_events;')
+  const eventColumns = new Set(describedEvents.map(row => String(row['column_name'])))
+  const { condition, params } = eventsFilter(filter, eventColumns)
 
   const rows = await queryEnergy(
     `
@@ -290,10 +466,10 @@ export async function listSessionPrompts(sessionId: string): Promise<readonly Se
       FROM energy_samples
       GROUP BY energy_log_id
     ) s ON s.id = e.energy_log_id
-    WHERE e.session_id = ?
+    WHERE e.session_id = ?${condition !== '' ? ` AND ${condition}` : ''}
     ORDER BY e.time, e.energy_log_id
   `,
-    [sessionId],
+    [sessionId, ...params],
   )
 
   return collapsePromptRuns(
