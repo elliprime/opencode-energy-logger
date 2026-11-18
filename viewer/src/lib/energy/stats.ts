@@ -76,16 +76,26 @@ export interface SessionPrompt {
 
 /**
  * The expression summing to kWh per sample, or null if the records
- * carry neither of the two known energy fields.
+ * carry neither of the two known energy fields. The columns can be
+ * VARCHAR when the records disagree on a field's type — a value that
+ * does not read as a number becomes NULL and drops out of the sums
+ * instead of failing the query.
  */
 function energyExpression(columns: Set<string>): string | null {
   if (columns.has('energy_kwh')) {
-    return 'energy_kwh'
+    return 'try_cast(energy_kwh AS DOUBLE)'
   }
   if (columns.has('energy_joules')) {
-    return 'energy_joules / 3600000.0'
+    return 'try_cast(energy_joules AS DOUBLE) / 3600000.0'
   }
   return null
+}
+
+/**
+ * A numeric column read as a double, tolerating a VARCHAR column if found.
+ */
+function numericExpression(column: string): string {
+  return `try_cast(${column} AS DOUBLE)`
 }
 
 function sumAs(expression: string | null, alias: string): string {
@@ -159,8 +169,8 @@ export async function computeDashboardStats(filter: EnergyFilter = []): Promise<
   if (energy === null) {
     throw new Error('The loaded energy records contain no energy measurements')
   }
-  const carbon = columns.has('carbon_g_co2eq') ? 'carbon_g_co2eq' : null
-  const duration = columns.has('duration_seconds') ? 'duration_seconds' : null
+  const carbon = columns.has('carbon_g_co2eq') ? numericExpression('carbon_g_co2eq') : null
+  const duration = columns.has('duration_seconds') ? numericExpression('duration_seconds') : null
 
   const describedEvents = await queryEnergy('DESCRIBE energy_events;')
   const eventColumns = new Set(describedEvents.map(row => String(row['column_name'])))
@@ -174,8 +184,8 @@ export async function computeDashboardStats(filter: EnergyFilter = []): Promise<
         COALESCE(SUM(${energy}), 0) AS total_kwh,
         ${sumAs(carbon, 'total_carbon_g')},
         ${sumAs(duration, 'total_duration_seconds')},
-        CAST(MIN(strftime(time, '%Y-%m-%d')) AS VARCHAR) AS first_day,
-        CAST(MAX(strftime(time, '%Y-%m-%d')) AS VARCHAR) AS last_day
+        CAST(MIN(strftime(try_cast(time AS TIMESTAMP), '%Y-%m-%d')) AS VARCHAR) AS first_day,
+        CAST(MAX(strftime(try_cast(time AS TIMESTAMP), '%Y-%m-%d')) AS VARCHAR) AS last_day
       FROM energy_samples
       ${whereSql([samples.condition])}
     `, samples.params),
@@ -466,7 +476,7 @@ export async function listSessionPrompts(
   const described = await queryEnergy('DESCRIBE energy_samples;')
   const columns = new Set(described.map(row => String(row['column_name'])))
   const energy = energyExpression(columns)
-  const carbon = columns.has('carbon_g_co2eq') ? 'carbon_g_co2eq' : null
+  const carbon = columns.has('carbon_g_co2eq') ? numericExpression('carbon_g_co2eq') : null
 
   const describedEvents = await queryEnergy('DESCRIBE energy_events;')
   const eventColumns = new Set(describedEvents.map(row => String(row['column_name'])))

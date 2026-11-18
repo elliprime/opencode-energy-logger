@@ -141,8 +141,9 @@ export function EnergyFilterBar({ dimensions, filter, onChange }: EnergyFilterBa
       {open ? (
         <div className="absolute inset-x-0 top-full z-30 mt-1 rounded-md border border-zinc-200 bg-white p-3 shadow-xl">
           <p className="text-xs text-zinc-500">
-            Records enter the dashboard when every condition matches — dimensions with a value
-            list match exactly, text values match as case-insensitive substrings.
+            Records enter the dashboard’s metrics when every condition matches — dimensions with
+            a value list match exactly, text values match as case-insensitive substrings. The
+            prompt chronology below always shows every session.
           </p>
           {draft.length === 0 ? (
             <p className="mt-2 text-sm text-zinc-500">No conditions — all records are included.</p>

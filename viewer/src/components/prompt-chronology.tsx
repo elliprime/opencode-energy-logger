@@ -5,7 +5,6 @@ import {
   getEnergyRecords,
   listSessionPrompts,
   listSessions,
-  type EnergyFilter,
   type SessionPrompt,
   type SessionSummary,
 } from '@/lib/energy/stats'
@@ -34,6 +33,11 @@ interface RecordLoadResult {
   readonly error: string | null
 }
 
+/**
+ * The session timeline of the loaded records. It deliberately shows every
+ * session regardless of the dashboard filter: it is a log of what
+ * happened, not a metric of what was filtered.
+ */
 export function PromptChronology() {
   const [sessions, setSessions] = useState<readonly SessionSummary[] | null>(null)
   const [selected, setSelected] = useState('')
@@ -59,7 +63,7 @@ export function PromptChronology() {
     return () => {
       cancelled = true
     }
-  })
+  }, [])
 
   useEffect(() => {
     if (selected === '') {
@@ -204,7 +208,10 @@ export function PromptChronology() {
   return (
     <section className="flex flex-col gap-3 rounded-md border border-zinc-200 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold text-zinc-900">Prompt chronology</h3>
+        <div>
+          <h3 className="text-sm font-semibold text-zinc-900">Prompt chronology</h3>
+          <p className="text-xs text-zinc-400">every session, regardless of the filter above</p>
+        </div>
         <select
           aria-label="Session"
           value={selected}
