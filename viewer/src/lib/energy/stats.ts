@@ -1,3 +1,4 @@
+import { JOULES_PER_KWH } from './format'
 import { queryEnergy } from './perspective'
 
 export interface EnergyTotals {
@@ -9,6 +10,10 @@ export interface EnergyTotals {
   readonly totalDurationSeconds: number | null
   readonly firstDay: string | null
   readonly lastDay: string | null
+  /** Distinct (session, prompt) pairs among the records the per-prompt average counts. */
+  readonly promptCount: number
+  /** Total energy of the records the per-prompt average counts. */
+  readonly promptEnergyKwh: number
 }
 
 /** Energy grouped by a record field, e.g. model or agent. */
@@ -135,6 +140,14 @@ async function groupBy(
 }
 
 /**
+ * A record whose total energy falls below this is considered negligible and
+ * is left out of the average energy per prompt: the tool-issued
+ * session-title requests fall below it while a compaction prompt
+ * does not.
+ */
+const NEGLIGIBLE_ENERGY_KWH = 1000 / JOULES_PER_KWH
+
+/**
  * The aggregates the dashboard tab shows. Must only be called after
  * `loadEnergyFiles` filled the tables.
  */
@@ -154,7 +167,7 @@ export async function computeDashboardStats(filter: EnergyFilter = []): Promise<
   const samples = samplesFilter(filter)
   const events = eventsFilter(filter, eventColumns)
 
-  const [totalRows, countRows, byModel, byAgent] = await Promise.all([
+  const [totalRows, countRows, promptRows, byModel, byAgent] = await Promise.all([
     queryEnergy(`
       SELECT
         CAST(COUNT(*) AS INT) AS samples,
@@ -173,6 +186,19 @@ export async function computeDashboardStats(filter: EnergyFilter = []): Promise<
       FROM energy_events
       ${whereSql([events.condition])}
     `, events.params),
+    queryEnergy(`
+      WITH log_energy AS (
+        SELECT energy_log_id AS id, COALESCE(SUM(${energy}), 0) AS kwh
+        FROM energy_samples
+        GROUP BY energy_log_id
+      )
+      SELECT
+        COALESCE(SUM(log_energy.kwh), 0) AS prompt_energy_kwh,
+        CAST(COUNT(DISTINCT (session_id, prompt)) AS INT) AS prompts
+      FROM energy_events
+      JOIN log_energy ON log_energy.id = energy_log_id
+      ${whereSql(['prompt IS NOT NULL', 'log_energy.kwh >= ?', events.condition])}
+    `, [NEGLIGIBLE_ENERGY_KWH, ...events.params]),
     groupBy('model', energy, carbon, filter),
     groupBy('agent', energy, carbon, filter),
   ])
@@ -190,6 +216,8 @@ export async function computeDashboardStats(filter: EnergyFilter = []): Promise<
       totalDurationSeconds: toNumberOrNull(totalsRow?.['total_duration_seconds']),
       firstDay: totalsRow?.['first_day'] === undefined ? null : String(totalsRow['first_day']),
       lastDay: totalsRow?.['last_day'] === undefined ? null : String(totalsRow['last_day']),
+      promptCount: toNumber(promptRows[0]?.['prompts']),
+      promptEnergyKwh: toNumber(promptRows[0]?.['prompt_energy_kwh']),
     },
     byModel,
     byAgent,

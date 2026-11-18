@@ -101,6 +101,15 @@ export function EnergyDashboard({ filter }: EnergyDashboardProps) {
           value={String(totals.requests)}
           detail="LLM calls the records cover"
         />
+        <StatCard
+          label="Average energy per prompt"
+          value={
+            totals.promptCount > 0
+              ? formatJoules(totals.promptEnergyKwh / totals.promptCount)
+              : '—'
+          }
+          detail={`across ${totals.promptCount.toLocaleString('en-US')} prompts — records under 1 kJ excluded`}
+        />
       </dl>
 
       <div className="grid gap-3 lg:grid-cols-3">
