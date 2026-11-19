@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   getEnergyRecords,
   listSessionPrompts,
   listSessions,
+  type PromptLocation,
   type SessionPrompt,
   type SessionSummary,
 } from '@/lib/energy/stats'
@@ -33,18 +34,30 @@ interface RecordLoadResult {
   readonly error: string | null
 }
 
+interface PromptChronologyProps {
+  readonly selectedSession: string
+  readonly onSelectSession: (sessionId: string) => void
+
+  /**
+   * Where to focus the chronology. Scrolls this entry into view
+   * when set.
+   */
+  readonly focus: PromptLocation | null
+}
+
 /**
  * The session timeline of the loaded records. It deliberately shows every
  * session regardless of the dashboard filter: it is a log of what
  * happened, not a metric of what was filtered.
  */
-export function PromptChronology() {
+export function PromptChronology({ selectedSession, onSelectSession, focus }: PromptChronologyProps) {
   const [sessions, setSessions] = useState<readonly SessionSummary[] | null>(null)
-  const [selected, setSelected] = useState('')
   const [loaded, setLoaded] = useState<SessionPrompts | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [openRecordId, setOpenRecordId] = useState<string | null>(null)
   const [recordLoads, setRecordLoads] = useState<ReadonlyMap<string, RecordLoadResult>>(new Map())
+  const entryElements = useRef(new Map<string, HTMLLIElement>())
+  const handledFocus = useRef<PromptLocation | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -66,15 +79,15 @@ export function PromptChronology() {
   }, [])
 
   useEffect(() => {
-    if (selected === '') {
+    if (selectedSession === '') {
       return
     }
 
     let cancelled = false
-    listSessionPrompts(selected)
+    listSessionPrompts(selectedSession)
       .then(result => {
         if (!cancelled) {
-          setLoaded({ sessionId: selected, prompts: result })
+          setLoaded({ sessionId: selectedSession, prompts: result })
         }
       })
       .catch(caught => {
@@ -86,9 +99,29 @@ export function PromptChronology() {
     return () => {
       cancelled = true
     }
-  }, [selected])
+  }, [selectedSession])
 
-  const prompts = loaded !== null && loaded.sessionId === selected ? loaded.prompts : null
+  // scrolls the entry to focus into view once the focus session's prompts have loaded
+  useEffect(() => {
+    if (focus === null || handledFocus.current === focus) {
+      return
+    }
+
+    if (loaded === null || loaded.sessionId !== focus.sessionId) {
+      return
+    }
+
+    handledFocus.current = focus
+    const entry = loaded.prompts.find(prompt => prompt.ids.includes(focus.logId))
+    if (entry !== undefined) {
+      entryElements.current.get(entry.ids[0])?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      })
+    }
+  }, [focus, loaded])
+
+  const prompts = loaded !== null && loaded.sessionId === selectedSession ? loaded.prompts : null
 
   function toggleRecord(prompt: SessionPrompt): void {
     if (prompt.ids.length === 0) {
@@ -120,7 +153,7 @@ export function PromptChronology() {
         {error}
       </p>
     )
-  } else if (selected === '') {
+  } else if (selectedSession === '') {
     body = <p className="text-sm text-zinc-500">Select a session to list its prompts.</p>
   } else if (prompts === null) {
     body = <p className="text-sm text-zinc-500">Loading prompts…</p>
@@ -131,7 +164,18 @@ export function PromptChronology() {
       <div className="h-[28rem] overflow-y-auto pr-1">
         <ol className="ml-1.5 flex flex-col gap-5 border-l-2 border-zinc-200 pl-5">
           {prompts.map((prompt, index) => (
-            <li key={prompt.ids[0] ?? index} className="relative">
+            <li
+              key={prompt.ids[0] ?? index}
+              ref={element => {
+                const entryKey = prompt.ids[0] ?? index
+                if (element === null) {
+                  entryElements.current.delete(entryKey)
+                } else {
+                  entryElements.current.set(entryKey, element)
+                }
+              }}
+              className="relative"
+            >
               <span
                 aria-hidden="true"
                 className={`absolute -left-[27px] top-1 h-2.5 w-2.5 rounded-full ring-4 ring-white ${
@@ -214,8 +258,8 @@ export function PromptChronology() {
         </div>
         <select
           aria-label="Session"
-          value={selected}
-          onChange={event => setSelected(event.target.value)}
+          value={selectedSession}
+          onChange={event => onSelectSession(event.target.value)}
           disabled={sessions === null}
           className="max-w-xs truncate rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900"
         >

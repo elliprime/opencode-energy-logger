@@ -75,6 +75,27 @@ export interface SessionPrompt {
 }
 
 /**
+ * The location of a prompt in the chronology of a session.
+ */
+export interface PromptLocation {
+  readonly sessionId: string
+  readonly logId: string
+}
+
+/**
+ * Represents one of the most expensive (in terms of energy consumption) chronology entries.
+ */
+export interface TopPrompt {
+  readonly prompt: string
+  readonly kind: string | null
+  readonly agent: string | null
+  readonly kwh: number
+
+  /** The entry's place in the chronology; null when its logs carry no ids. */
+  readonly location: PromptLocation | null
+}
+
+/**
  * The expression summing to kWh per sample, or null if the records
  * carry neither of the two known energy fields. The columns can be
  * VARCHAR when the records disagree on a field's type — a value that
@@ -523,6 +544,126 @@ export async function listSessionPrompts(
       samples: toNumber(row['samples']),
     })),
   )
+}
+
+/**
+ * One request of the loaded records as the top-prompts query returns
+ * it, before grouping.
+ */
+interface TopPromptRow {
+  readonly sessionId: string
+  readonly id: string | null
+  readonly kind: string | null
+  readonly agent: string | null
+  readonly prompt: string | null
+  readonly kwh: number
+}
+
+/**
+ * Returns the most expensive prompts of the loaded records. Must only
+ * be called after `loadEnergyFiles` filled the tables.
+ */
+export async function listTopPrompts(
+  filter: EnergyFilter = [],
+  limit = 10,
+): Promise<readonly TopPrompt[]> {
+  const described = await queryEnergy('DESCRIBE energy_samples;')
+  const columns = new Set(described.map(row => String(row['column_name'])))
+  const energy = energyExpression(columns)
+  if (energy === null) {
+    throw new Error('The loaded energy records contain no energy measurements')
+  }
+
+  const describedEvents = await queryEnergy('DESCRIBE energy_events;')
+  const eventColumns = new Set(describedEvents.map(row => String(row['column_name'])))
+  const { condition, params } = eventsFilter(filter, eventColumns)
+
+  const rows = await queryEnergy(
+    `
+    SELECT
+      e.session_id AS session_id,
+      e.energy_log_id AS id,
+      e.kind AS kind,
+      e.agent AS agent,
+      e.prompt AS prompt,
+      COALESCE(s.kwh, 0) AS kwh
+    FROM energy_events e
+    LEFT JOIN (
+      SELECT energy_log_id AS id, COALESCE(SUM(${energy}), 0) AS kwh
+      FROM energy_samples
+      GROUP BY energy_log_id
+    ) s ON s.id = e.energy_log_id
+    ${whereSql(['e.session_id IS NOT NULL', 'e.prompt IS NOT NULL', condition])}
+    ORDER BY e.session_id, e.time, e.energy_log_id
+  `,
+    params,
+  )
+
+  return topPromptsOf(
+    rows.map(row => ({
+      sessionId: toStringValue(row['session_id']),
+      id: toStringOrNull(row['id']),
+      kind: toStringOrNull(row['kind']),
+      agent: toStringOrNull(row['agent']),
+      prompt: toStringOrNull(row['prompt']),
+      kwh: toNumber(row['kwh']),
+    })),
+    limit,
+  )
+}
+
+/**
+ * Collapses the rows into chronology entries — runs of consecutive
+ * rows within one session sharing a prompt, kind and agent — and
+ * returns the most expensive ones.
+ */
+function topPromptsOf(rows: readonly TopPromptRow[], limit: number): TopPrompt[] {
+  /** One run: consecutive rows of one session with the same prompt, kind and agent. */
+  interface Run {
+    readonly sessionId: string
+    readonly prompt: string
+    readonly kind: string | null
+    readonly agent: string | null
+    kwh: number
+    firstId: string | null
+  }
+
+  const runs: Run[] = []
+
+  let runKey: string | null = null
+  let run: Run | null = null
+
+  for (const row of rows) {
+    const key = JSON.stringify([row.prompt, row.kind, row.agent])
+    if (run === null || runKey !== key || run.sessionId !== row.sessionId) {
+      run = {
+        sessionId: row.sessionId,
+        prompt: row.prompt ?? '',
+        kind: row.kind,
+        agent: row.agent,
+        kwh: 0,
+        firstId: null,
+      }
+      runKey = key
+      runs.push(run)
+    }
+    run.kwh += row.kwh
+    if (run.firstId === null && row.id !== null) {
+      run.firstId = row.id
+    }
+  }
+
+  return runs
+    .sort((a, b) => b.kwh - a.kwh)
+    .slice(0, limit)
+    .map(run => ({
+      prompt: run.prompt,
+      kind: run.kind,
+      agent: run.agent,
+      kwh: run.kwh,
+      focus:
+        run.firstId !== null ? { sessionId: run.sessionId, logId: run.firstId } : null,
+    }))
 }
 
 export async function getEnergyRecords(

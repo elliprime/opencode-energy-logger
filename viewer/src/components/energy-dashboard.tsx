@@ -6,6 +6,7 @@ import {
   type DashboardStats,
   type EnergyFilter,
   type GroupEnergy,
+  type PromptLocation,
 } from '@/lib/energy/stats'
 import {
   JOULES_PER_KWH,
@@ -15,6 +16,7 @@ import {
   formatSignificant,
 } from '@/lib/energy/format'
 import { PromptChronology } from '@/components/prompt-chronology'
+import { TopPrompts } from '@/components/top-prompts'
 
 interface EnergyDashboardProps {
   /** The filter restricting which records the dashboard's metrics use. */
@@ -24,6 +26,13 @@ interface EnergyDashboardProps {
 export function EnergyDashboard({ filter }: EnergyDashboardProps) {
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [promptFocus, setPromptFocus] = useState<PromptLocation | null>(null)
+  const [chronologySession, setChronologySession] = useState('')
+
+  function focusPrompt(focus: PromptLocation): void {
+    setPromptFocus(focus)
+    setChronologySession(focus.sessionId)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -117,9 +126,15 @@ export function EnergyDashboard({ filter }: EnergyDashboardProps) {
         <BreakdownList title="Energy by agent" groups={byAgent} />
       </div>
 
+      <TopPrompts filter={filter} onPromptClick={focusPrompt} />
+
       <hr className={"text-zinc-200"}/>
 
-      <PromptChronology />
+      <PromptChronology
+        selectedSession={chronologySession}
+        onSelectSession={setChronologySession}
+        focus={promptFocus}
+      />
     </div>
   )
 }
