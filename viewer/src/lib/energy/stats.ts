@@ -42,6 +42,7 @@ export interface SessionSummary {
  * collapsing.
  */
 interface PromptRow {
+  readonly sessionId: string
   readonly id: string | null
   readonly time: string | null
   readonly kind: string | null
@@ -54,25 +55,36 @@ interface PromptRow {
 }
 
 /**
- * One chronology entry: a run of consecutive requests with the same
- * agent, kind and prompt — the queries one agent loop made to fulfill
- * that prompt — collapsed into a single entry. The scalar fields
- * describe the first request of the run, the energy fields total the
- * whole run, and `ids` lists every collapsed log in order.
+ * A row that can collapse into a prompt run: the fields that decide
+ * which run a row belongs to.
  */
-export interface SessionPrompt {
-  readonly time: string | null
+interface PromptRunRow {
+  readonly sessionId: string
+  readonly id: string | null
   readonly kind: string | null
-  readonly model: string | null
   readonly agent: string | null
   readonly prompt: string | null
-  readonly kwh: number
-  readonly carbonG: number | null
-  readonly samples: number
-  /** How many logs the entry collapses; 1 when nothing collapsed. */
+}
+
+/**
+ * One collapsed run of rows: the scalar fields describe the run's
+ * first row, the metric fields total the whole run, and `logs` counts
+ * the rows — `ids` lists their logs in order. Which fields are metrics
+ * is the row's to say: every field the rows carry numbers in.
+ */
+type PromptRun<Row extends PromptRunRow> = Omit<Row, 'id'> & {
+  /** How many rows the run collapsed; 1 when nothing collapsed. */
   readonly logs: number
   readonly ids: readonly string[]
 }
+
+/**
+ * One chronology entry: the requests of one run — consecutive requests
+ * within one session with the same agent, kind and prompt, the queries
+ * one agent loop made to fulfill that prompt — collapsed into a single
+ * entry, their metrics totaled.
+ */
+export type SessionPrompt = PromptRun<PromptRow>
 
 /**
  * The location of a prompt in the chronology of a session.
@@ -436,50 +448,53 @@ export async function listSessions(filter: EnergyFilter = []): Promise<readonly 
 
 /**
  * Collapses the chronological request rows into chronology entries: a
- * run of consecutive requests with the same agent, kind and prompt is
- * one agent loop working through one prompt, and becomes one entry
- * carrying the run's totals. A new prompt, a compaction or a different
- * agent breaks the run and starts a new entry.
+ * run of consecutive requests within one session with the same agent,
+ * kind and prompt is one agent loop working through one prompt, and
+ * becomes one entry carrying the run's totals. A new prompt, a
+ * compaction, a different agent or a new session breaks the run and
+ * starts a new entry.
+ *
+ * Note: this expects rows to be sorted by session ID and time.
  */
-function collapsePromptRuns(rows: readonly PromptRow[]): SessionPrompt[] {
-  const entries: SessionPrompt[] = []
+function collapsePromptRuns<Row extends PromptRunRow>(rows: readonly Row[]): PromptRun<Row>[] {
+  const entries: PromptRun<Row>[] = []
 
   for (const row of rows) {
     const previous = entries[entries.length - 1]
     if (
       previous !== undefined &&
+      previous.sessionId === row.sessionId &&
       previous.agent === row.agent &&
       previous.kind === row.kind &&
       previous.prompt === row.prompt
     ) {
       entries[entries.length - 1] = {
-        ...previous,
-        kwh: previous.kwh + row.kwh,
-        carbonG:
-          previous.carbonG === null && row.carbonG === null
-            ? null
-            : (previous.carbonG ?? 0) + (row.carbonG ?? 0),
-        samples: previous.samples + row.samples,
+        ...addMetricsTo(previous, row),
         logs: previous.logs + 1,
         ids: row.id !== null ? [...previous.ids, row.id] : previous.ids,
       }
     } else {
+      const { id, ...scalars } = row
       entries.push({
-        time: row.time,
-        kind: row.kind,
-        model: row.model,
-        agent: row.agent,
-        prompt: row.prompt,
-        kwh: row.kwh,
-        carbonG: row.carbonG,
-        samples: row.samples,
+        ...scalars,
         logs: 1,
-        ids: row.id !== null ? [row.id] : [],
+        ids: id !== null ? [id] : [],
       })
     }
   }
 
   return entries
+}
+
+function addMetricsTo<Row extends PromptRunRow>(entry: PromptRun<Row>, rowToAdd: Row): PromptRun<Row> {
+  const totals: Record<string, unknown> = { ...entry }
+  for (const [key, value] of Object.entries(rowToAdd)) {
+    if (typeof value === 'number') { // check if this value is a metric
+      const total = totals[key]
+      totals[key] = (typeof total === 'number' ? total : 0) + value
+    }
+  }
+  return totals as PromptRun<Row>
 }
 
 /**
@@ -506,6 +521,7 @@ export async function listSessionPrompts(
   const rows = await queryEnergy(
     `
     SELECT
+      e.session_id AS session_id,
       e.energy_log_id AS id,
       CAST(e.time AS VARCHAR) AS time,
       e.kind AS kind,
@@ -533,6 +549,7 @@ export async function listSessionPrompts(
 
   return collapsePromptRuns(
     rows.map(row => ({
+      sessionId: toStringValue(row['session_id']),
       id: toStringOrNull(row['id']),
       time: toStringOrNull(row['time']),
       kind: toStringOrNull(row['kind']),
@@ -618,51 +635,15 @@ export async function listTopPrompts(
  * returns the most expensive ones.
  */
 function topPromptsOf(rows: readonly TopPromptRow[], limit: number): TopPrompt[] {
-  /** One run: consecutive rows of one session with the same prompt, kind and agent. */
-  interface Run {
-    readonly sessionId: string
-    readonly prompt: string
-    readonly kind: string | null
-    readonly agent: string | null
-    kwh: number
-    firstId: string | null
-  }
-
-  const runs: Run[] = []
-
-  let runKey: string | null = null
-  let run: Run | null = null
-
-  for (const row of rows) {
-    const key = JSON.stringify([row.prompt, row.kind, row.agent])
-    if (run === null || runKey !== key || run.sessionId !== row.sessionId) {
-      run = {
-        sessionId: row.sessionId,
-        prompt: row.prompt ?? '',
-        kind: row.kind,
-        agent: row.agent,
-        kwh: 0,
-        firstId: null,
-      }
-      runKey = key
-      runs.push(run)
-    }
-    run.kwh += row.kwh
-    if (run.firstId === null && row.id !== null) {
-      run.firstId = row.id
-    }
-  }
-
-  return runs
+  return collapsePromptRuns(rows)
     .sort((a, b) => b.kwh - a.kwh)
     .slice(0, limit)
     .map(run => ({
-      prompt: run.prompt,
+      prompt: run.prompt ?? '',
       kind: run.kind,
       agent: run.agent,
       kwh: run.kwh,
-      focus:
-        run.firstId !== null ? { sessionId: run.sessionId, logId: run.firstId } : null,
+      location: run.ids.length > 0 ? { sessionId: run.sessionId, logId: run.ids[0] } : null,
     }))
 }
 
