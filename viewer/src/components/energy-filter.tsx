@@ -2,10 +2,16 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type {
+  AnnotationFilterCondition,
   EnergyFilter,
   EnergyFilterCondition,
   EnergyFilterMatch,
   FilterDimension,
+} from '@/lib/energy/stats'
+import {
+  ANNOTATION_DIMENSION,
+  isAnnotationCondition,
+  isFilterConditionActive,
 } from '@/lib/energy/stats'
 
 /** A dimension with few distinct values matches exactly; free text matches as a substring. */
@@ -45,7 +51,7 @@ export function EnergyFilterBar({ dimensions, filter, onChange }: EnergyFilterBa
     function close(propagateChange: boolean): void {
       setOpen(false)
       if (propagateChange) {
-        onChange(draft.filter(condition => condition.value !== ''))
+        onChange(draft.filter(isFilterConditionActive))
       }
     }
 
@@ -77,7 +83,7 @@ export function EnergyFilterBar({ dimensions, filter, onChange }: EnergyFilterBa
     if (open) {
       setOpen(false)
       if (propagate) {
-        onChange(draft.filter(condition => condition.value !== ''))
+        onChange(draft.filter(isFilterConditionActive))
       }
       return
     }
@@ -123,12 +129,21 @@ export function EnergyFilterBar({ dimensions, filter, onChange }: EnergyFilterBa
                     and
                   </span>
                 ) : null}
-                <span
-                  className="max-w-56 truncate rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-xs text-zinc-700"
-                  title={`${condition.dimension} ${condition.match === 'exact' ? 'is' : 'contains'} "${condition.value}"`}
-                >
-                  {condition.dimension} {condition.match === 'exact' ? '=' : '~'} {condition.value}
-                </span>
+                {isAnnotationCondition(condition) ? (
+                  <span
+                    className="max-w-56 truncate rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-xs text-zinc-700"
+                    title={`annotation is any of: ${condition.values.map(value => `"${value}"`).join(', ')}`}
+                  >
+                    annotation in ({condition.values.join(', ')})
+                  </span>
+                ) : (
+                  <span
+                    className="max-w-56 truncate rounded bg-zinc-100 px-1.5 py-0.5 font-mono text-xs text-zinc-700"
+                    title={`${condition.dimension} ${condition.match === 'exact' ? 'is' : 'contains'} "${condition.value}"`}
+                  >
+                    {condition.dimension} {condition.match === 'exact' ? '=' : '~'} {condition.value}
+                  </span>
+                )}
               </span>
             ))}
           </span>
@@ -142,7 +157,8 @@ export function EnergyFilterBar({ dimensions, filter, onChange }: EnergyFilterBa
         <div className="absolute inset-x-0 top-full z-30 mt-1 rounded-md border border-zinc-200 bg-white p-3 shadow-xl">
           <p className="text-xs text-zinc-500">
             Records enter the dashboard’s metrics when every condition matches — dimensions with
-            a value list match exactly, text values match as case-insensitive substrings. The
+            a value list match exactly, text values match as case-insensitive substrings, and an
+            annotation condition matches the prompt runs tagged with any of its values. The
             prompt chronology below always shows every session.
           </p>
           {draft.length === 0 ? (
@@ -207,7 +223,11 @@ function FilterConditionRow({
   function selectDimension(name: string): void {
     // one dimension's value means nothing for another, and the new
     // dimension may match by a different mode
-    onChange({ dimension: name, value: '', match: matchFor(dimensions, name) })
+    onChange(
+      name === ANNOTATION_DIMENSION
+        ? { dimension: ANNOTATION_DIMENSION, values: [] }
+        : { dimension: name, value: '', match: matchFor(dimensions, name) },
+    )
   }
 
   return (
@@ -224,7 +244,13 @@ function FilterConditionRow({
           </option>
         ))}
       </select>
-      {dimension !== undefined && dimension.values !== null ? (
+      {isAnnotationCondition(condition) ? (
+        <AnnotationConditionRow
+          condition={condition}
+          tags={dimensions.find(candidate => candidate.name === ANNOTATION_DIMENSION)?.values ?? []}
+          onChange={onChange}
+        />
+      ) : dimension !== undefined && dimension.values !== null ? (
         <select
           aria-label="Value"
           value={condition.value}
@@ -256,6 +282,57 @@ function FilterConditionRow({
       >
         Remove
       </button>
+    </div>
+  )
+}
+
+/**
+ * The editor of an annotation condition: the tags in use as toggle
+ * chips, a run matches when it carries any of the selected ones.
+ */
+function AnnotationConditionRow({ condition, tags, onChange }: {
+  condition: AnnotationFilterCondition
+  tags: readonly string[]
+  onChange: (condition: EnergyFilterCondition) => void
+}) {
+  function toggleTag(tag: string): void {
+    onChange({
+      dimension: ANNOTATION_DIMENSION,
+      values: condition.values.includes(tag)
+        ? condition.values.filter(value => value !== tag)
+        : [...condition.values, tag],
+    })
+  }
+
+  if (tags.length === 0) {
+    return (
+      <p className="grow text-sm text-zinc-500">
+        No annotations yet — tag prompt runs in the chronology below, then filter by them here.
+      </p>
+    )
+  }
+
+  return (
+    <div className="flex grow flex-wrap items-center gap-1.5">
+      {tags.map(tag => {
+        const selected = condition.values.includes(tag)
+        return (
+          <button
+            key={tag}
+            type="button"
+            aria-pressed={selected}
+            onClick={() => toggleTag(tag)}
+            title={`runs tagged "${tag}"`}
+            className={
+              selected
+                ? 'rounded-full bg-violet-600 px-2 py-0.5 text-xs font-medium text-white transition-colors hover:bg-violet-700'
+                : 'rounded-full border border-zinc-300 bg-white px-2 py-0.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100'
+            }
+          >
+            {tag}
+          </button>
+        )
+      })}
     </div>
   )
 }

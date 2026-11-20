@@ -10,6 +10,9 @@ import {
   type SessionSummary,
 } from '@/lib/energy/stats'
 import { formatCarbon, formatJoules, formatKwh } from '@/lib/energy/format'
+import { annotationKey, normalizeTag } from '@/lib/energy/annotations'
+import { useReportAnnotations } from './annotations-provider'
+import { AnnotationChips } from './annotation-chips'
 
 const TIMELINE_DOT_COLORS: Record<string, string> = {
   primary: 'bg-emerald-600',
@@ -58,6 +61,9 @@ export function PromptChronology({ selectedSession, onSelectSession, focus }: Pr
   const [recordLoads, setRecordLoads] = useState<ReadonlyMap<string, RecordLoadResult>>(new Map())
   const entryElements = useRef(new Map<string, HTMLLIElement>())
   const handledFocus = useRef<PromptLocation | null>(null)
+
+  const [keyOfRunBeingAnnotated, setKeyOfRunBeingAnnotated] = useState<string | null>(null)
+  const { annotations, knownTags, setRunTags, clearAll } = useReportAnnotations()
 
   useEffect(() => {
     let cancelled = false
@@ -163,7 +169,11 @@ export function PromptChronology({ selectedSession, onSelectSession, focus }: Pr
     body = (
       <div className="h-[28rem] overflow-y-auto pr-1">
         <ol className="ml-1.5 flex flex-col gap-5 border-l-2 border-zinc-200 pl-5">
-          {prompts.map((prompt, index) => (
+          {prompts.map((prompt, index) => {
+            const runKey = prompt.ids.length > 0 ? annotationKey(prompt.sessionId, prompt.ids[0]) : null
+            const tags = runKey !== null ? annotations.get(runKey)?.tags ?? [] : []
+
+            return (
             <li
               key={prompt.ids[0] ?? index}
               ref={element => {
@@ -232,6 +242,33 @@ export function PromptChronology({ selectedSession, onSelectSession, focus }: Pr
                   <p className="mt-1.5 line-clamp-3 text-sm text-zinc-700" title={prompt.prompt ?? undefined}>
                     {prompt.prompt ?? '(no prompt text)'}
                   </p>
+                  {runKey !== null ? (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      {/* the editor shows the same chips, removable — the plain row stays hidden while it is open */}
+                      {keyOfRunBeingAnnotated === runKey ? null : <AnnotationChips tags={tags} />}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setKeyOfRunBeingAnnotated(current => (current === runKey ? null : runKey))
+                        }
+                        aria-expanded={keyOfRunBeingAnnotated === runKey}
+                        title="Annotate this prompt run with tags"
+                        className="rounded-full border border-dashed border-zinc-300 px-2 py-0.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-600"
+                      >
+                        + tag
+                      </button>
+                    </div>
+                  ) : null}
+                  {runKey !== null && keyOfRunBeingAnnotated === runKey ? (
+                    <AnnotationEditor
+                      sessionId={prompt.sessionId}
+                      logIds={prompt.ids}
+                      tags={tags}
+                      knownTags={knownTags}
+                      onChange={setRunTags}
+                      onClose={() => setKeyOfRunBeingAnnotated(null)}
+                    />
+                  ) : null}
                 </div>
                 <div className="flex-none text-right" title={energyTitle(prompt)}>
                   <span className="text-sm font-medium text-zinc-900">
@@ -243,7 +280,8 @@ export function PromptChronology({ selectedSession, onSelectSession, focus }: Pr
                 </div>
               </div>
             </li>
-          ))}
+            )
+          })}
         </ol>
       </div>
     )
@@ -256,23 +294,26 @@ export function PromptChronology({ selectedSession, onSelectSession, focus }: Pr
           <h3 className="text-sm font-semibold text-zinc-900">Prompt chronology</h3>
           <p className="text-xs text-zinc-400">every session, regardless of the filter above</p>
         </div>
-        <select
-          aria-label="Session"
-          value={selectedSession}
-          onChange={event => onSelectSession(event.target.value)}
-          disabled={sessions === null}
-          className="max-w-xs truncate rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900"
-        >
-          <option value="">
-            {sessions !== null && sessions.length === 0 ? 'No sessions' : 'Select a session…'}
-          </option>
-          {(sessions ?? []).map(session => (
-            <option key={session.sessionId} value={session.sessionId}>
-              {session.sessionId} ({session.requests}{' '}
-              {session.requests === 1 ? 'request' : 'requests'})
+        <div className="flex flex-wrap items-center gap-2">
+          <ClearAnnotationsButton count={annotations.size} onClear={clearAll} />
+          <select
+            aria-label="Session"
+            value={selectedSession}
+            onChange={event => onSelectSession(event.target.value)}
+            disabled={sessions === null}
+            className="max-w-xs truncate rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900"
+          >
+            <option value="">
+              {sessions !== null && sessions.length === 0 ? 'No sessions' : 'Select a session…'}
             </option>
-          ))}
-        </select>
+            {(sessions ?? []).map(session => (
+              <option key={session.sessionId} value={session.sessionId}>
+                {session.sessionId} ({session.requests}{' '}
+                {session.requests === 1 ? 'request' : 'requests'})
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
       {body}
     </section>
@@ -320,6 +361,142 @@ function energyTitle(prompt: SessionPrompt): string {
     parts.push(`agent ${prompt.agent}`)
   }
   return parts.join(' · ')
+}
+
+interface AnnotationEditorProps {
+  /** The run being annotated. */
+  readonly sessionId: string
+  readonly logIds: readonly string[]
+
+  /** The run's current tags. */
+  readonly tags: readonly string[]
+
+  /** Every tag in use, as suggestions while typing. */
+  readonly knownTags: readonly string[]
+
+  readonly onChange: (
+    sessionId: string,
+    logIds: readonly string[],
+    tags: readonly string[],
+  ) => void
+
+  readonly onClose: () => void
+}
+
+function AnnotationEditor({
+  sessionId,
+  logIds,
+  tags,
+  knownTags,
+  onChange,
+  onClose,
+}: AnnotationEditorProps) {
+  const [value, setValue] = useState('')
+
+  function addTag(): void {
+    const tag = normalizeTag(value)
+    if (tag === null) {
+      return
+    }
+
+    if (!tags.some(existing => existing.toLowerCase() === tag.toLowerCase())) {
+      onChange(sessionId, logIds, [...tags, tag])
+    }
+    setValue('')
+  }
+
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5">
+      <AnnotationChips
+        tags={tags}
+        onRemoveTag={removed => onChange(sessionId, logIds, tags.filter(tag => tag !== removed))}
+      />
+      <input
+        type="text"
+        aria-label="Add a tag"
+        value={value}
+        placeholder="add a tag…"
+        list="annotation-tag-suggestions"
+        onChange={event => setValue(event.target.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            addTag()
+          } else if (event.key === 'Escape') {
+            onClose()
+          }
+        }}
+        className="w-36 rounded-md border border-zinc-300 bg-white px-2 py-0.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-violet-500 focus:outline-none"
+      />
+      <datalist id="annotation-tag-suggestions">
+        {knownTags
+          .filter(tag => !tags.some(selected => selected.toLowerCase() === tag.toLowerCase()))
+          .map(tag => (
+            <option key={tag} value={tag} />
+          ))}
+      </datalist>
+      <button
+        type="button"
+        onClick={onClose}
+        className="ml-auto rounded-md px-2 py-0.5 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
+      >
+        Done
+      </button>
+    </div>
+  )
+}
+
+function ClearAnnotationsButton({ count, onClear }: {
+  readonly count: number
+  readonly onClear: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+
+  if (count === 0) {
+    return null
+  }
+
+  if (confirming) {
+    return (
+      <span
+        role="group"
+        aria-label="Clear all annotations"
+        className="flex items-center gap-1.5 text-xs text-zinc-500"
+      >
+        <span>
+          Clear the annotations of {count} {count === 1 ? 'run' : 'runs'}?
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            onClear()
+            setConfirming(false)
+          }}
+          className="rounded-md bg-red-600 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-red-700"
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100"
+        >
+          Cancel
+        </button>
+      </span>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirming(true)}
+      title="Remove every annotation of this analysis"
+      className="rounded-md border border-zinc-300 bg-white px-2 py-1 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100"
+    >
+      Clear all annotations
+    </button>
+  )
 }
 
 /**

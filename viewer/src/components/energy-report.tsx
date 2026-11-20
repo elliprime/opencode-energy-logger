@@ -1,8 +1,18 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { loadEnergyFiles, type LoadedEnergyColumns } from '@/lib/energy/perspective'
-import { listFilterDimensions, type EnergyFilter, type FilterDimension } from '@/lib/energy/stats'
+import {
+  loadEnergyFiles,
+  syncPromptAnnotations,
+  type LoadedEnergyColumns,
+} from '@/lib/energy/perspective'
+import {
+  listFilterDimensions,
+  ANNOTATION_DIMENSION,
+  type EnergyFilter,
+  type FilterDimension,
+} from '@/lib/energy/stats'
+import { AnnotationsProvider, useReportAnnotations } from './annotations-provider'
 import { EnergyDashboard } from './energy-dashboard'
 import { EnergyFilterBar } from './energy-filter'
 import { RawDataReport } from './raw-data-report'
@@ -26,6 +36,14 @@ interface EnergyReportProps {
  * state starts fresh for every analyzed energy directory.
  */
 export function EnergyReport({ filenames, source }: EnergyReportProps) {
+  return (
+    <AnnotationsProvider source={source}>
+      <EnergyReportBody filenames={filenames} source={source} />
+    </AnnotationsProvider>
+  )
+}
+
+function EnergyReportBody({ filenames, source }: EnergyReportProps) {
   const [tab, setTab] = useState<ReportTab>('dashboard')
   const [rawDataVisited, setRawDataVisited] = useState(false)
   const [busy, setBusy] = useState(true)
@@ -33,6 +51,7 @@ export function EnergyReport({ filenames, source }: EnergyReportProps) {
   const [columns, setColumns] = useState<LoadedEnergyColumns | null>(null)
   const [dimensions, setDimensions] = useState<readonly FilterDimension[] | null>(null)
   const [filter, setFilter] = useState<EnergyFilter>([])
+  const { annotations, knownTags } = useReportAnnotations()
 
   // load all energy files into DuckDB, shared by both tabs
   useEffect(() => {
@@ -84,12 +103,28 @@ export function EnergyReport({ filenames, source }: EnergyReportProps) {
     }
   }, [columns])
 
+  // mirror the annotations into DuckDB once the tables exist, and
+  // again whenever an annotation changes — the filter conditions and
+  // the raw data view query the DuckDB data
+  useEffect(() => {
+    if (columns === null) {
+      return
+    }
+
+    syncPromptAnnotations([...annotations.values()]).catch(caught => {
+      setError(caught instanceof Error ? caught.message : 'Something went wrong')
+    })
+  }, [columns, annotations])
+
   function selectTab(id: ReportTab) {
     setTab(id)
     if (id === 'raw-data') {
       setRawDataVisited(true)
     }
   }
+
+  const filterDimensions =
+    dimensions === null ? null : [...dimensions, { name: ANNOTATION_DIMENSION, values: knownTags }]
 
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xs relative">
@@ -126,8 +161,8 @@ export function EnergyReport({ filenames, source }: EnergyReportProps) {
           </button>
         ))}
       </div>
-      {tab === 'dashboard' && dimensions !== null ? (
-        <EnergyFilterBar dimensions={dimensions} filter={filter} onChange={setFilter} />
+      {tab === 'dashboard' && filterDimensions !== null ? (
+        <EnergyFilterBar dimensions={filterDimensions} filter={filter} onChange={setFilter} />
       ) : null}
       {error !== null ? (
         <p role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-base text-red-800">

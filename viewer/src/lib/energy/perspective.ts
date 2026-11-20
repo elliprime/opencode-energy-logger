@@ -17,6 +17,11 @@
  *   Note: the energy_samples table is denormalized primarily because
  *   perspective.js does not support JOINs.
  *
+ * - `prompt_annotations`: the user's prompt-run annotations, mirrored
+ *   from localStorage by `syncPromptAnnotations` — one row per log id
+ *   and tag. The record tables carry the same tags joined in their
+ *   `annotations` column.
+ *
  * Perspective's DuckDB virtual server then translates whatever report
  * the user configures in the `<perspective-viewer>` UI into DuckDB
  * queries — no report or query is hardcoded in this app.
@@ -61,6 +66,8 @@ console.error = (...args: unknown[]) => {
   consoleError(...args)
 }
 
+import type { PromptRunAnnotation } from './annotations'
+
 /**
  * A Perspective client over the DuckDB virtual server.
  */
@@ -73,7 +80,11 @@ export type EnergyClient = Awaited<ReturnType<typeof worker>>
 export const ENERGY_TABLES = {
   samples: 'memory.energy_samples',
   events: 'memory.energy_events',
+  annotations: 'memory.prompt_annotations',
 } as const
+
+/** The columns of the `prompt_annotations` table (see `syncPromptAnnotations`). */
+export const PROMPT_ANNOTATION_COLUMNS = ['session_id', 'energy_log_id', 'tag'] as const
 
 /** Energy file names are safe to use in URLs after this check. */
 const FILENAME_PATTERN = /^[\w.-]+$/
@@ -359,10 +370,11 @@ function asString(value: unknown): string | null {
  */
 let loadChain: Promise<unknown> = Promise.resolve()
 
-/** The column names of the two tables {@link loadEnergyFiles} fills. */
+/** The column names of the tables in DuckDB. */
 export interface LoadedEnergyColumns {
   readonly events: string[]
   readonly samples: string[]
+  readonly annotations: string[]
 }
 
 /**
@@ -415,6 +427,7 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
     eventColumns.energy_samples = deduped.map(
       record => (Array.isArray(record.energy) ? record.energy.length : 0),
     )
+    eventColumns.annotations = deduped.map(() => null)
     await insertTable(conn, 'energy_events', eventColumns)
 
     const sampleRows: Array<Record<string, unknown>> = []
@@ -432,11 +445,63 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
     }
 
     const sampleColumns = columnsOf(sampleRows)
+    sampleColumns.annotations = sampleRows.map(() => null)
     await insertTable(conn, 'energy_samples', sampleColumns)
 
     return {
       events: Object.keys(eventColumns),
       samples: Object.keys(sampleColumns),
+      annotations: [...PROMPT_ANNOTATION_COLUMNS],
+    }
+  })
+
+  loadChain = load.catch(() => undefined)
+  return load
+}
+
+/**
+ * Mirrors the analysis's prompt-run annotations into DuckDB:
+ *
+ * - into the `prompt_annotations` table, one row per log id and tag, which
+ *   the annotation filter conditions query
+ * - into the `annotations` column of the two record tables, each log's tags
+ *   joined as a comma-separated string for the raw data view
+ *
+ * Rebuilt from scratch on every call — after `loadEnergyFiles` filled
+ * the tables, and again whenever an annotation changed.
+ */
+export async function syncPromptAnnotations(
+  annotations: readonly PromptRunAnnotation[],
+): Promise<void> {
+  const rows = annotations.flatMap(annotation =>
+    annotation.logIds.flatMap(energyLogId =>
+      annotation.tags.map(tag => ({
+        session_id: annotation.sessionId,
+        energy_log_id: energyLogId,
+        tag,
+      })),
+    ),
+  )
+
+  const load = loadChain.then(async () => {
+    const conn = await getConnection()
+    await insertTable(conn, 'prompt_annotations', {
+      session_id: rows.map(row => row.session_id),
+      energy_log_id: rows.map(row => row.energy_log_id),
+      tag: rows.map(row => row.tag),
+    })
+
+    for (const table of ['energy_events', 'energy_samples']) {
+      await conn.query(`UPDATE ${table} SET annotations = NULL;`)
+      await conn.query(`
+        UPDATE ${table} SET annotations = tagged.tags
+        FROM (
+          SELECT energy_log_id, string_agg(tag, ', ' ORDER BY tag) AS tags
+          FROM prompt_annotations
+          GROUP BY energy_log_id
+        ) tagged
+        WHERE ${table}.energy_log_id = tagged.energy_log_id;
+      `)
     }
   })
 

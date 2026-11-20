@@ -10,6 +10,7 @@ type TableId = keyof typeof ENERGY_TABLES
 const TABLE_TABS: readonly { id: TableId; label: string }[] = [
   { id: 'samples', label: 'Energy samples' },
   { id: 'events', label: 'Events' },
+  { id: 'annotations', label: 'Annotations' },
 ]
 
 /**
@@ -19,7 +20,15 @@ const TABLE_TABS: readonly { id: TableId; label: string }[] = [
 const DEFAULT_CONFIGS: Record<TableId, ViewerConfigUpdate> = {
   samples: {
     table: ENERGY_TABLES.samples,
-    columns: ['session_id', 'time', 'energy_kwh', 'carbon_g_co2eq', 'duration_seconds', 'prompt'],
+    columns: [
+      'session_id',
+      'time',
+      'energy_kwh',
+      'carbon_g_co2eq',
+      'duration_seconds',
+      'prompt',
+      'annotations',
+    ],
     aggregates: { energy_kwh: 'sum', carbon_g_co2eq: 'sum', duration_seconds: 'sum' },
     sort: [['energy_kwh', 'desc']],
     columns_config: {
@@ -33,12 +42,17 @@ const DEFAULT_CONFIGS: Record<TableId, ViewerConfigUpdate> = {
   },
   events: {
     table: ENERGY_TABLES.events,
-    columns: ['session_id', 'time', 'kind', 'model', 'energy_samples'],
+    columns: ['session_id', 'time', 'kind', 'model', 'annotations', 'energy_samples'],
     aggregates: { energy_samples: 'sum' },
     sort: [['time', 'desc']],
     columns_config: {
       prompt: { column_size_override: 600 },
     },
+  },
+  annotations: {
+    table: ENERGY_TABLES.annotations,
+    columns: ['session_id', 'energy_log_id', 'tag'],
+    sort: [['session_id', 'asc']],
   },
 }
 

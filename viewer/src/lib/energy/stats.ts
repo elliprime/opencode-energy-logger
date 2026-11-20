@@ -270,11 +270,42 @@ export async function computeDashboardStats(filter: EnergyFilter = []): Promise<
 /** How a filter condition's value matches: exactly, or as a substring. */
 export type EnergyFilterMatch = 'exact' | 'contains'
 
-/** One condition of the dashboard filter: a dimension and the value it must match. */
-export interface EnergyFilterCondition {
+/** One condition on a record dimension: a dimension name and the value it must match. */
+export interface DimensionFilterCondition {
   readonly dimension: string
   readonly value: string
   readonly match: EnergyFilterMatch
+}
+
+/**
+ * One condition on prompt-run annotations: a run matches when it
+ * carries at least one of the tags — `annotation IN ("review",
+ * "refactor")`.
+ */
+export interface AnnotationFilterCondition {
+  readonly dimension: 'annotation'
+  readonly values: readonly string[]
+}
+
+export type EnergyFilterCondition = DimensionFilterCondition | AnnotationFilterCondition
+
+/** The filter's annotation pseudo-dimension: it matches the annotations, not a database column. */
+export const ANNOTATION_DIMENSION = 'annotation'
+
+export function isAnnotationCondition(
+  condition: EnergyFilterCondition,
+): condition is AnnotationFilterCondition {
+  return condition.dimension === ANNOTATION_DIMENSION
+}
+
+function isDimensionCondition(
+  condition: EnergyFilterCondition,
+): condition is DimensionFilterCondition {
+  return !isAnnotationCondition(condition)
+}
+
+export function isFilterConditionActive(condition: EnergyFilterCondition): boolean {
+  return isAnnotationCondition(condition) ? condition.values.length > 0 : condition.value !== ''
 }
 
 /** The dashboard's filter: its conditions are AND'ed together. */
@@ -324,10 +355,10 @@ interface FilterSql {
 }
 
 function activeConditions(filter: EnergyFilter): readonly EnergyFilterCondition[] {
-  return filter.filter(condition => condition.value !== '')
+  return filter.filter(isFilterConditionActive)
 }
 
-function dimensionClause(condition: EnergyFilterCondition): string {
+function dimensionClause(condition: DimensionFilterCondition): string {
   if (!DIMENSION_NAME_PATTERN.test(condition.dimension)) {
     throw new Error(`Invalid filter dimension: ${condition.dimension}`)
   }
@@ -336,7 +367,7 @@ function dimensionClause(condition: EnergyFilterCondition): string {
     : `LOWER(${condition.dimension}) LIKE ? ESCAPE '\\'`
 }
 
-function dimensionParam(condition: EnergyFilterCondition): string {
+function dimensionParam(condition: DimensionFilterCondition): string {
   if (condition.match === 'exact') {
     return condition.value.toLowerCase()
   }
@@ -345,40 +376,74 @@ function dimensionParam(condition: EnergyFilterCondition): string {
   return `%${escaped}%`
 }
 
+function annotationClause(values: readonly string[]): FilterSql | null {
+  if (values.length === 0) {
+    return null
+  }
+
+  const placeholders = values.map(() => '?').join(', ')
+  return {
+    condition: `energy_log_id IN (SELECT energy_log_id FROM prompt_annotations WHERE LOWER(tag) IN (${placeholders}))`,
+    params: values.map(value => value.toLowerCase()),
+  }
+}
+
+function conditionClause(condition: EnergyFilterCondition): FilterSql | null {
+  if (isAnnotationCondition(condition)) {
+    return annotationClause(condition.values)
+  }
+  return { condition: dimensionClause(condition), params: [dimensionParam(condition)] }
+}
+
 /** The filter as conditions on `energy_samples` rows. */
 function samplesFilter(filter: EnergyFilter): FilterSql {
-  const active = activeConditions(filter)
+  const clauses = activeConditions(filter)
+    .map(conditionClause)
+    .filter((clause): clause is FilterSql => clause !== null)
   return {
-    condition: active.map(dimensionClause).join(' AND '),
-    params: active.map(dimensionParam),
+    condition: clauses.map(clause => clause.condition).join(' AND '),
+    params: clauses.flatMap(clause => clause.params),
   }
 }
 
 /**
- * The filter as conditions on `energy_events` rows: conditions whose
- * dimension the table carries apply directly; the rest keep the logs
- * whose samples match.
+ * The filter as conditions on `energy_events` rows: dimension
+ * conditions whose dimension the table carries apply directly,
+ * annotation conditions match the log ids of the annotated runs, and
+ * the rest keep the logs whose samples match.
  */
 function eventsFilter(filter: EnergyFilter, eventColumns: ReadonlySet<string>): FilterSql {
-  const direct = activeConditions(filter).filter(condition => eventColumns.has(condition.dimension))
-  const viaSamples = activeConditions(filter).filter(condition => !eventColumns.has(condition.dimension))
+  const dimensions = activeConditions(filter).filter(isDimensionCondition)
+  const annotations = activeConditions(filter).filter(isAnnotationCondition)
+  const direct = dimensions.filter(condition => eventColumns.has(condition.dimension))
+  const viaSamples = dimensions.filter(condition => !eventColumns.has(condition.dimension))
 
-  const conditions: string[] = []
-  const params: string[] = []
+  const clauses: FilterSql[] = []
   if (direct.length > 0) {
-    conditions.push(direct.map(dimensionClause).join(' AND '))
-    params.push(...direct.map(dimensionParam))
+    clauses.push({
+      condition: direct.map(dimensionClause).join(' AND '),
+      params: direct.map(dimensionParam),
+    })
+  }
+  for (const condition of annotations) {
+    const clause = annotationClause(condition.values)
+    if (clause !== null) {
+      clauses.push(clause)
+    }
   }
   if (viaSamples.length > 0) {
-    conditions.push(
-      `energy_log_id IN (SELECT energy_log_id FROM energy_samples WHERE ${viaSamples
+    clauses.push({
+      condition: `energy_log_id IN (SELECT energy_log_id FROM energy_samples WHERE ${viaSamples
         .map(dimensionClause)
         .join(' AND ')})`,
-    )
-    params.push(...viaSamples.map(dimensionParam))
+      params: viaSamples.map(dimensionParam),
+    })
   }
 
-  return { condition: conditions.join(' AND '), params }
+  return {
+    condition: clauses.map(clause => clause.condition).join(' AND '),
+    params: clauses.flatMap(clause => clause.params),
+  }
 }
 
 /** The present conditions as a WHERE clause, empty when there are none. */

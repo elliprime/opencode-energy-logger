@@ -8,6 +8,9 @@ import {
   type TopPrompt,
 } from '@/lib/energy/stats'
 import { formatJoules, formatKwh } from '@/lib/energy/format'
+import { annotationKey, type PromptRunAnnotation } from '@/lib/energy/annotations'
+import { useReportAnnotations } from './annotations-provider'
+import { AnnotationChips } from './annotation-chips'
 
 /** The row counts the report can be set to show. */
 const PROMPT_LIMITS = [10, 25, 50, 100] as const
@@ -27,6 +30,7 @@ export function TopPrompts({ filter, onPromptClick }: TopPromptsProps) {
   const [error, setError] = useState<string | null>(null)
   const [limit, setLimit] = useState<number>(10)
   const [rowsContinueBelow, setRowsContinueBelow] = useState(true)
+  const { annotations } = useReportAnnotations()
 
   useEffect(() => {
     let cancelled = false
@@ -66,7 +70,7 @@ export function TopPrompts({ filter, onPromptClick }: TopPromptsProps) {
   } else if (prompts.length === 0) {
     body = <p className="text-sm text-zinc-500">No prompts in the filtered records.</p>
   } else if (prompts.length <= VISIBLE_ROW_LIMIT) {
-    body = <PromptsTable prompts={prompts} onFocus={onPromptClick} />
+    body = <PromptsTable prompts={prompts} annotations={annotations} onFocus={onPromptClick} />
   } else {
     body = (
       <div className="relative">
@@ -78,7 +82,12 @@ export function TopPrompts({ filter, onPromptClick }: TopPromptsProps) {
             setRowsContinueBelow(isThereScrollableContent)
           }}
         >
-          <PromptsTable prompts={prompts} onFocus={onPromptClick} stickyHeader />
+          <PromptsTable
+            prompts={prompts}
+            annotations={annotations}
+            onFocus={onPromptClick}
+            stickyHeader
+          />
         </div>
         {rowsContinueBelow ? (
           <div
@@ -129,10 +138,12 @@ export function TopPrompts({ filter, onPromptClick }: TopPromptsProps) {
  */
 function PromptsTable({
   prompts,
+  annotations,
   onFocus,
   stickyHeader = false,
 }: {
   readonly prompts: readonly TopPrompt[]
+  readonly annotations: ReadonlyMap<string, PromptRunAnnotation>
   readonly onFocus: (focus: PromptLocation) => void
   readonly stickyHeader?: boolean
 }) {
@@ -162,6 +173,12 @@ function PromptsTable({
           </th>
           <th
             scope="col"
+            className={`border-b border-zinc-200 py-1.5 pr-4 text-left font-medium ${stickyHeader ? headerCells : ''}`}
+          >
+            Annotations
+          </th>
+          <th
+            scope="col"
             className={`border-b border-zinc-200 py-1.5 text-right font-medium ${stickyHeader ? headerCells : ''}`}
           >
             Energy
@@ -172,6 +189,10 @@ function PromptsTable({
         {prompts.map((prompt, index) => {
           const focus = prompt.location
           const text = prompt.prompt === '' ? '(no prompt text)' : prompt.prompt
+          const tags =
+            focus === null
+              ? []
+              : annotations.get(annotationKey(focus.sessionId, focus.logId))?.tags ?? []
 
           return (
             <tr key={index} className="border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50">
@@ -196,6 +217,9 @@ function PromptsTable({
               </td>
               <td className="whitespace-nowrap py-1.5 pr-4 text-zinc-600">
                 {prompt.agent ?? '—'}
+              </td>
+              <td className="py-1.5 pr-4">
+                <AnnotationChips tags={tags} />
               </td>
               <td
                 className="whitespace-nowrap py-1.5 text-right tabular-nums text-zinc-900"
