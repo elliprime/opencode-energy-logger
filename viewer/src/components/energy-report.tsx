@@ -8,6 +8,7 @@ import {
 } from '@/lib/energy/perspective'
 import {
   listFilterDimensions,
+  isAnnotationCondition,
   ANNOTATION_DIMENSION,
   type EnergyFilter,
   type FilterDimension,
@@ -51,6 +52,7 @@ function EnergyReportBody({ filenames, source }: EnergyReportProps) {
   const [columns, setColumns] = useState<LoadedEnergyColumns | null>(null)
   const [dimensions, setDimensions] = useState<readonly FilterDimension[] | null>(null)
   const [filter, setFilter] = useState<EnergyFilter>([])
+  const [annotationsSyncCount, setAnnotationsSyncCount] = useState(0)
   const { annotations, knownTags } = useReportAnnotations()
 
   // load all energy files into DuckDB, shared by both tabs
@@ -111,9 +113,22 @@ function EnergyReportBody({ filenames, source }: EnergyReportProps) {
       return
     }
 
-    syncPromptAnnotations([...annotations.values()]).catch(caught => {
-      setError(caught instanceof Error ? caught.message : 'Something went wrong')
-    })
+    let cancelled = false
+    syncPromptAnnotations([...annotations.values()])
+      .then(() => {
+        if (!cancelled) {
+          setAnnotationsSyncCount(version => version + 1)
+        }
+      })
+      .catch(caught => {
+        if (!cancelled) {
+          setError(caught instanceof Error ? caught.message : 'Something went wrong')
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
   }, [columns, annotations])
 
   function selectTab(id: ReportTab) {
@@ -123,8 +138,17 @@ function EnergyReportBody({ filenames, source }: EnergyReportProps) {
     }
   }
 
+  // when a sync occurs, this value ends up incremented, which is used to trigger a re-compute in dashboard stats
+  const annotationsSyncCountResolved = filter.some(isAnnotationCondition) ? annotationsSyncCount : 0
+
+  // the annotation dimension filters through the `prompt_annotations`
+  // table, which exists only once the first mirror sync completed
   const filterDimensions =
-    dimensions === null ? null : [...dimensions, { name: ANNOTATION_DIMENSION, values: knownTags }]
+    dimensions === null
+      ? null
+      : annotationsSyncCount > 0
+        ? [...dimensions, { name: ANNOTATION_DIMENSION, values: knownTags }]
+        : dimensions
 
   return (
     <section className="flex flex-col gap-4 rounded-lg border border-zinc-200 bg-white p-5 shadow-xs relative">
@@ -172,7 +196,7 @@ function EnergyReportBody({ filenames, source }: EnergyReportProps) {
       {columns !== null ? (
         <>
           <div role="tabpanel" hidden={tab !== 'dashboard'}>
-            <EnergyDashboard filter={filter} />
+            <EnergyDashboard filter={filter} annotationSyncCount={annotationsSyncCountResolved} />
           </div>
           {rawDataVisited ? (
             <div role="tabpanel" hidden={tab !== 'raw-data'}>

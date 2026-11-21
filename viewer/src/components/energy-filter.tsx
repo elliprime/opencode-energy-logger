@@ -101,7 +101,9 @@ export function EnergyFilterBar({ dimensions, filter, onChange }: EnergyFilterBa
     }
     setDraft(current => [
       ...current,
-      { dimension: dimension.name, value: '', match: matchFor(dimensions, dimension.name) },
+      dimension.name === ANNOTATION_DIMENSION
+        ? { dimension: ANNOTATION_DIMENSION, values: [] }
+        : { dimension: dimension.name, value: '', match: matchFor(dimensions, dimension.name) },
     ])
   }
 

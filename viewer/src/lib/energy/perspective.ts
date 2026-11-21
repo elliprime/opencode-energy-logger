@@ -67,6 +67,7 @@ console.error = (...args: unknown[]) => {
 }
 
 import type { PromptRunAnnotation } from './annotations'
+import { collapsePromptRuns } from './prompt-runs'
 
 /**
  * A Perspective client over the DuckDB virtual server.
@@ -463,7 +464,11 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
  * Mirrors the analysis's prompt-run annotations into DuckDB:
  *
  * - into the `prompt_annotations` table, one row per log id and tag, which
- *   the annotation filter conditions query
+ *   the annotation filter conditions query. An annotation stores only the
+ *   first log id of its run; the run's current log ids are re-derived
+ *   from the loaded records with the same collapsing logic the chronology uses.
+ *   This way the annotation keeps covering its whole run even when the
+ *   analyzed source has grown since it was first made.
  * - into the `annotations` column of the two record tables, each log's tags
  *   joined as a comma-separated string for the raw data view
  *
@@ -473,17 +478,40 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
 export async function syncPromptAnnotations(
   annotations: readonly PromptRunAnnotation[],
 ): Promise<void> {
-  const rows = annotations.flatMap(annotation =>
-    annotation.logIds.flatMap(energyLogId =>
-      annotation.tags.map(tag => ({
-        session_id: annotation.sessionId,
-        energy_log_id: energyLogId,
-        tag,
-      })),
-    ),
-  )
-
   const load = loadChain.then(async () => {
+    const runs = collapsePromptRuns(
+      (
+        await queryEnergy(`
+          SELECT session_id, energy_log_id, kind, agent, prompt
+          FROM energy_events
+          ORDER BY session_id, time, energy_log_id
+        `)
+      ).map(row => ({
+        sessionId: asString(row['session_id']) ?? '',
+        id: asString(row['energy_log_id']),
+        kind: asString(row['kind']),
+        agent: asString(row['agent']),
+        prompt: asString(row['prompt']),
+      })),
+    )
+
+    const runLogIds = new Map<string, readonly string[]>()
+    for (const run of runs) {
+      for (const id of run.ids) {
+        runLogIds.set(id, run.ids)
+      }
+    }
+
+    const rows = annotations.flatMap(annotation =>
+      (runLogIds.get(annotation.logId) ?? []).flatMap(energyLogId =>
+        annotation.tags.map(tag => ({
+          session_id: annotation.sessionId,
+          energy_log_id: energyLogId,
+          tag,
+        })),
+      ),
+    )
+
     const conn = await getConnection()
     await insertTable(conn, 'prompt_annotations', {
       session_id: rows.map(row => row.session_id),

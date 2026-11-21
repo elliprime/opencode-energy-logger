@@ -262,7 +262,7 @@ export function PromptChronology({ selectedSession, onSelectSession, focus }: Pr
                   {runKey !== null && keyOfRunBeingAnnotated === runKey ? (
                     <AnnotationEditor
                       sessionId={prompt.sessionId}
-                      logIds={prompt.ids}
+                      logId={prompt.ids[0]}
                       tags={tags}
                       knownTags={knownTags}
                       onChange={setRunTags}
@@ -366,7 +366,9 @@ function energyTitle(prompt: SessionPrompt): string {
 interface AnnotationEditorProps {
   /** The run being annotated. */
   readonly sessionId: string
-  readonly logIds: readonly string[]
+
+  /** The run's first log id. */
+  readonly logId: string
 
   /** The run's current tags. */
   readonly tags: readonly string[]
@@ -376,7 +378,7 @@ interface AnnotationEditorProps {
 
   readonly onChange: (
     sessionId: string,
-    logIds: readonly string[],
+    logId: string,
     tags: readonly string[],
   ) => void
 
@@ -385,7 +387,7 @@ interface AnnotationEditorProps {
 
 function AnnotationEditor({
   sessionId,
-  logIds,
+  logId,
   tags,
   knownTags,
   onChange,
@@ -400,7 +402,7 @@ function AnnotationEditor({
     }
 
     if (!tags.some(existing => existing.toLowerCase() === tag.toLowerCase())) {
-      onChange(sessionId, logIds, [...tags, tag])
+      onChange(sessionId, logId, [...tags, tag])
     }
     setValue('')
   }
@@ -409,7 +411,7 @@ function AnnotationEditor({
     <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5">
       <AnnotationChips
         tags={tags}
-        onRemoveTag={removed => onChange(sessionId, logIds, tags.filter(tag => tag !== removed))}
+        onRemoveTag={removed => onChange(sessionId, logId, tags.filter(tag => tag !== removed))}
       />
       <input
         type="text"

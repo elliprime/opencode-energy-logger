@@ -21,9 +21,11 @@ import { TopPrompts } from '@/components/top-prompts'
 interface EnergyDashboardProps {
   /** The filter restricting which records the dashboard's metrics use. */
   readonly filter: EnergyFilter
+
+  readonly annotationSyncCount: number
 }
 
-export function EnergyDashboard({ filter }: EnergyDashboardProps) {
+export function EnergyDashboard({ filter, annotationSyncCount }: EnergyDashboardProps) {
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [promptFocus, setPromptFocus] = useState<PromptLocation | null>(null)
@@ -51,7 +53,7 @@ export function EnergyDashboard({ filter }: EnergyDashboardProps) {
     return () => {
       cancelled = true
     }
-  }, [filter])
+  }, [filter, annotationSyncCount])
 
   if (error !== null) {
     return (
@@ -126,7 +128,7 @@ export function EnergyDashboard({ filter }: EnergyDashboardProps) {
         <BreakdownList title="Energy by agent" groups={byAgent} />
       </div>
 
-      <TopPrompts filter={filter} onPromptClick={focusPrompt} />
+      <TopPrompts filter={filter} annotationSyncCount={annotationSyncCount} onPromptClick={focusPrompt} />
 
       <hr className={"text-zinc-200"}/>
 

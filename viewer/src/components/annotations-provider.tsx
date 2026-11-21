@@ -11,7 +11,7 @@ import {
 interface AnnotationsContextValue {
   /** Every annotation, keyed by `annotationKey` (session + first log id). */
   readonly annotations: ReadonlyMap<string, PromptRunAnnotation>
- 
+
   /** The distinct tags in use, sorted. */
   readonly knownTags: readonly string[]
 
@@ -21,7 +21,7 @@ interface AnnotationsContextValue {
    */
   readonly setRunTags: (
     sessionId: string,
-    logIds: readonly string[],
+    logId: string,
     tags: readonly string[],
   ) => void
 
@@ -40,23 +40,19 @@ export function AnnotationsProvider({ source, children }: {
   readonly source: string
   readonly children: ReactNode
 }) {
-  const [runs, setRuns] = useState<ReadonlyMap<string, PromptRunAnnotation>>(() =>
+  const [annotations, setAnnotations] = useState<ReadonlyMap<string, PromptRunAnnotation>>(() =>
     loadAnnotations(source),
   )
 
   const setRunTags = useCallback(
-    (sessionId: string, logIds: readonly string[], tags: readonly string[]) => {
-      setRuns(current => {
-        if (logIds.length === 0) {
-          return current
-        }
-
+    (sessionId: string, logId: string, tags: readonly string[]) => {
+      setAnnotations(current => {
         const next = new Map(current)
-        const key = annotationKey(sessionId, logIds[0])
+        const key = annotationKey(sessionId, logId)
         if (tags.length === 0) {
           next.delete(key)
         } else {
-          next.set(key, { sessionId, logIds, tags })
+          next.set(key, { sessionId, logId, tags })
         }
         saveAnnotations(source, next)
         return next
@@ -66,16 +62,16 @@ export function AnnotationsProvider({ source, children }: {
   )
 
   const clearAll = useCallback(() => {
-    setRuns(() => {
+    setAnnotations(() => {
       saveAnnotations(source, new Map())
       return new Map()
     })
   }, [source])
 
-  const tags = useMemo(() => {
+  const knownTags = useMemo(() => {
     const seen = new Set<string>()
     const distinct: string[] = []
-    for (const annotation of runs.values()) {
+    for (const annotation of annotations.values()) {
       for (const tag of annotation.tags) {
         const key = tag.toLowerCase()
         if (!seen.has(key)) {
@@ -85,11 +81,11 @@ export function AnnotationsProvider({ source, children }: {
       }
     }
     return distinct.sort((a, b) => a.localeCompare(b))
-  }, [runs])
+  }, [annotations])
 
   const value = useMemo(
-    () => ({ runs, tags, setRunTags, clearAll }),
-    [runs, tags, setRunTags, clearAll],
+    () => ({ annotations, knownTags, setRunTags, clearAll }),
+    [annotations, knownTags, setRunTags, clearAll],
   )
 
   return <AnnotationsContext.Provider value={value}>{children}</AnnotationsContext.Provider>

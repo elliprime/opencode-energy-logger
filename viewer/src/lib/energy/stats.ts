@@ -1,5 +1,6 @@
 import { JOULES_PER_KWH } from './format'
 import { queryEnergy } from './perspective'
+import { collapsePromptRuns, type PromptRun } from './prompt-runs'
 
 export interface EnergyTotals {
   readonly requests: number
@@ -52,30 +53,6 @@ interface PromptRow {
   readonly kwh: number
   readonly carbonG: number | null
   readonly samples: number
-}
-
-/**
- * A row that can collapse into a prompt run: the fields that decide
- * which run a row belongs to.
- */
-interface PromptRunRow {
-  readonly sessionId: string
-  readonly id: string | null
-  readonly kind: string | null
-  readonly agent: string | null
-  readonly prompt: string | null
-}
-
-/**
- * One collapsed run of rows: the scalar fields describe the run's
- * first row, the metric fields total the whole run, and `logs` counts
- * the rows — `ids` lists their logs in order. Which fields are metrics
- * is the row's to say: every field the rows carry numbers in.
- */
-type PromptRun<Row extends PromptRunRow> = Omit<Row, 'id'> & {
-  /** How many rows the run collapsed; 1 when nothing collapsed. */
-  readonly logs: number
-  readonly ids: readonly string[]
 }
 
 /**
@@ -322,14 +299,16 @@ export interface FilterDimension {
 }
 
 /**
- * Columns that measure rather than describe — plus the keys and
- * timestamps — are never offered as filter dimensions.
+ * Columns that measure rather than describe — plus the keys,
+ * timestamps and the app-derived mirror columns — are never offered
+ * as filter dimensions.
  */
 const NON_DIMENSION_COLUMNS = new Set([
   'type',
   'time',
   'energy_log_id',
   'energy_samples',
+  'annotations',
   'energy_joules',
   'energy_kwh',
   'avg_power_watts',
@@ -509,57 +488,6 @@ export async function listSessions(filter: EnergyFilter = []): Promise<readonly 
     requests: toNumber(row['requests']),
     firstTime: toStringOrNull(row['first_time']),
   }))
-}
-
-/**
- * Collapses the chronological request rows into chronology entries: a
- * run of consecutive requests within one session with the same agent,
- * kind and prompt is one agent loop working through one prompt, and
- * becomes one entry carrying the run's totals. A new prompt, a
- * compaction, a different agent or a new session breaks the run and
- * starts a new entry.
- *
- * Note: this expects rows to be sorted by session ID and time.
- */
-function collapsePromptRuns<Row extends PromptRunRow>(rows: readonly Row[]): PromptRun<Row>[] {
-  const entries: PromptRun<Row>[] = []
-
-  for (const row of rows) {
-    const previous = entries[entries.length - 1]
-    if (
-      previous !== undefined &&
-      previous.sessionId === row.sessionId &&
-      previous.agent === row.agent &&
-      previous.kind === row.kind &&
-      previous.prompt === row.prompt
-    ) {
-      entries[entries.length - 1] = {
-        ...addMetricsTo(previous, row),
-        logs: previous.logs + 1,
-        ids: row.id !== null ? [...previous.ids, row.id] : previous.ids,
-      }
-    } else {
-      const { id, ...scalars } = row
-      entries.push({
-        ...scalars,
-        logs: 1,
-        ids: id !== null ? [id] : [],
-      })
-    }
-  }
-
-  return entries
-}
-
-function addMetricsTo<Row extends PromptRunRow>(entry: PromptRun<Row>, rowToAdd: Row): PromptRun<Row> {
-  const totals: Record<string, unknown> = { ...entry }
-  for (const [key, value] of Object.entries(rowToAdd)) {
-    if (typeof value === 'number') { // check if this value is a metric
-      const total = totals[key]
-      totals[key] = (typeof total === 'number' ? total : 0) + value
-    }
-  }
-  return totals as PromptRun<Row>
 }
 
 /**

@@ -19,11 +19,11 @@ export interface PromptRunAnnotation {
   readonly sessionId: string
 
   /**
-   * Every log id of the run at annotation time. The first is the
-   * run's key (see `annotationKey`); the rest make the DuckDB mirror
-   * carry the annotation on every request of the run.
+   * The first log id of the run . The rest of the run's log ids are re-derived
+   * from the loaded records when the annotation is mirrored into DuckDB, so it
+   * keeps covering the whole run even as the analyzed source grows.
    */
-  readonly logIds: readonly string[]
+  readonly logId: string
 
   readonly tags: readonly string[]
 }
@@ -52,7 +52,7 @@ function isNonEmptyString(value: unknown): value is string {
 /** One stored annotation as saved in localStorage, before validation. */
 interface StoredAnnotation {
   readonly sessionId?: unknown
-  readonly logIds?: unknown
+  readonly logId?: unknown
   readonly tags?: unknown
 }
 
@@ -83,12 +83,11 @@ function parseAnnotations(text: string | null): Map<string, PromptRunAnnotation>
       continue
     }
 
-    const logIds = Array.isArray(entry.logIds) ? entry.logIds.filter(isNonEmptyString) : []
     const tags = Array.isArray(entry.tags) ? entry.tags.filter(isNonEmptyString) : []
-    if (isNonEmptyString(entry.sessionId) && logIds.length > 0 && tags.length > 0) {
-      annotations.set(annotationKey(entry.sessionId, logIds[0]), {
+    if (isNonEmptyString(entry.sessionId) && isNonEmptyString(entry.logId) && tags.length > 0) {
+      annotations.set(annotationKey(entry.sessionId, entry.logId), {
         sessionId: entry.sessionId,
-        logIds,
+        logId: entry.logId,
         tags,
       })
     }
@@ -121,8 +120,12 @@ export function saveAnnotations(source: string, annotations: ReadonlyMap<string,
 
   try {
     window.localStorage.setItem(storageKey(source), JSON.stringify([...annotations.values()]))
-  } catch (e) {
+  } catch (caught) {
     // the annotations live on in this session's state
-    console.log(`Failed to save annotations in local storage: ${e.stack || e.message}`)
+    console.error(
+      `Failed to save annotations in local storage: ${
+        caught instanceof Error ? (caught.stack ?? caught.message) : String(caught)
+      }`,
+    )
   }
 }

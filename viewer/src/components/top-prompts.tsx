@@ -22,10 +22,12 @@ interface TopPromptsProps {
   /** The filter restricting which records the report uses. */
   readonly filter: EnergyFilter
 
+  readonly annotationSyncCount: number
+
   readonly onPromptClick: (prompt: PromptLocation) => void
 }
 
-export function TopPrompts({ filter, onPromptClick }: TopPromptsProps) {
+export function TopPrompts({ filter, annotationSyncCount, onPromptClick }: TopPromptsProps) {
   const [prompts, setPrompts] = useState<readonly TopPrompt[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [limit, setLimit] = useState<number>(10)
@@ -49,7 +51,7 @@ export function TopPrompts({ filter, onPromptClick }: TopPromptsProps) {
     return () => {
       cancelled = true
     }
-  }, [filter, limit])
+  }, [filter, limit, annotationSyncCount])
 
   function changeLimit(next: number): void {
     // the new table starts scrolled back at the top, so the fade
