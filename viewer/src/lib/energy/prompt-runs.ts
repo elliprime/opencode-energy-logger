@@ -21,6 +21,104 @@ export type PromptRun<Row extends PromptRunRow> = Omit<Row, 'id'> & {
   readonly ids: readonly string[]
 }
 
+export interface RunMembershipRow extends PromptRunRow {
+  readonly time: string | null
+}
+
+/** The fields that decide which prompt run a row belongs to. */
+interface RunIdentity {
+  readonly sessionId: string
+  readonly kind: string | null
+  readonly agent: string | null
+  readonly prompt: string | null
+}
+
+/** Whether two chronological rows belong to the same prompt run. */
+function sameRun(left: RunIdentity, right: RunIdentity): boolean {
+  return (
+    left.sessionId === right.sessionId
+    && left.agent === right.agent
+    && left.kind === right.kind
+    && left.prompt === right.prompt
+  )
+}
+
+/**
+ * Returns an array mapping the index of a energy log row (from rows) with the
+ * log ID of the first row in the prompt run the aforementioned log belongs to.
+ */
+export function findRunFirstLogIds(rows: readonly RunMembershipRow[]): Array<string | null> {
+  const order = rows.map((_, index) => index)
+  order.sort((left, right) => compareChronologically(rows[left], rows[right]))
+
+  const firstLogIds: Array<string | null> = rows.map(() => null)
+
+  let members: number[] = []
+
+  // sets the first log ID for every member of the current run
+  const finishRun = () => {
+    const firstId = members.map(index => rows[index].id).find(id => id !== null) ?? null
+    for (const index of members) {
+      firstLogIds[index] = firstId
+    }
+    members = []
+  }
+
+  for (const index of order) {
+    if (members.length > 0 && sameRun(rows[members[0]], rows[index])) {
+      members.push(index)
+    } else {
+      finishRun()
+      members = [index]
+    }
+  }
+  finishRun()
+  return firstLogIds
+}
+
+function compareChronologically(left: RunMembershipRow, right: RunMembershipRow): number {
+  if (left.sessionId !== right.sessionId) {
+    return left.sessionId < right.sessionId ? -1 : 1
+  }
+  return compareTime(left.time, right.time) || compareLogId(left.id, right.id)
+}
+
+function compareTime(left: string | null, right: string | null): number {
+  if (left === right) {
+    return 0
+  }
+
+  if (left === null) {
+    return -1
+  }
+  
+  if (right === null) {
+    return 1
+  }
+
+  // ISO timestamps compare as instants (DuckDB reads them as
+  // TIMESTAMP); anything else stays the plain string it was logged as
+  const leftTime = Date.parse(left)
+  const rightTime = Date.parse(right)
+  if (Number.isNaN(leftTime) || Number.isNaN(rightTime)) {
+    return left < right ? -1 : 1
+  }
+  return leftTime - rightTime
+}
+
+function compareLogId(left: string | null, right: string | null): number {
+  if (left === right) {
+    return 0
+  }
+  if (left === null) {
+    return -1
+  }
+  if (right === null) {
+    return 1
+  }
+  return left < right ? -1 : 1
+}
+
 /**
  * Collapses the chronological request rows into prompt runs: a
  * run of consecutive requests within one session with the same agent,
@@ -36,13 +134,7 @@ export function collapsePromptRuns<Row extends PromptRunRow>(rows: readonly Row[
 
   for (const row of rows) {
     const previous = entries[entries.length - 1]
-    if (
-      previous !== undefined &&
-      previous.sessionId === row.sessionId &&
-      previous.agent === row.agent &&
-      previous.kind === row.kind &&
-      previous.prompt === row.prompt
-    ) {
+    if (previous !== undefined && sameRun(previous, row)) {
       entries[entries.length - 1] = {
         ...addMetricsTo(previous, row),
         logs: previous.logs + 1,

@@ -192,9 +192,9 @@ function PromptsTable({
           const focus = prompt.location
           const text = prompt.prompt === '' ? '(no prompt text)' : prompt.prompt
           const tags =
-            focus === null
-              ? []
-              : annotations.get(annotationKey(focus.sessionId, focus.logId))?.tags ?? []
+            focus !== null && prompt.runFirstLogId !== null
+              ? annotations.get(annotationKey(focus.sessionId, prompt.runFirstLogId))?.tags ?? []
+              : []
 
           return (
             <tr key={index} className="border-b border-zinc-100 last:border-b-0 hover:bg-zinc-50">

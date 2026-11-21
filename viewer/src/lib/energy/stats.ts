@@ -82,6 +82,12 @@ export interface TopPrompt {
 
   /** The entry's place in the chronology; null when its logs carry no ids. */
   readonly location: PromptLocation | null
+
+  /**
+   * The first log id of the prompt run the entry belongs to. Null
+   * when the run's logs carry no ids.
+   */
+  readonly runFirstLogId: string | null
 }
 
 /**
@@ -307,6 +313,7 @@ const NON_DIMENSION_COLUMNS = new Set([
   'type',
   'time',
   'energy_log_id',
+  'run_first_log_id',
   'energy_samples',
   'annotations',
   'energy_joules',
@@ -563,6 +570,7 @@ export async function listSessionPrompts(
 interface TopPromptRow {
   readonly sessionId: string
   readonly id: string | null
+  readonly runFirstLogId: string | null
   readonly kind: string | null
   readonly agent: string | null
   readonly prompt: string | null
@@ -593,6 +601,7 @@ export async function listTopPrompts(
     SELECT
       e.session_id AS session_id,
       e.energy_log_id AS id,
+      e.run_first_log_id AS run_first_log_id,
       e.kind AS kind,
       e.agent AS agent,
       e.prompt AS prompt,
@@ -613,6 +622,7 @@ export async function listTopPrompts(
     rows.map(row => ({
       sessionId: toStringValue(row['session_id']),
       id: toStringOrNull(row['id']),
+      runFirstLogId: toStringOrNull(row['run_first_log_id']),
       kind: toStringOrNull(row['kind']),
       agent: toStringOrNull(row['agent']),
       prompt: toStringOrNull(row['prompt']),
@@ -637,6 +647,7 @@ function topPromptsOf(rows: readonly TopPromptRow[], limit: number): TopPrompt[]
       agent: run.agent,
       kwh: run.kwh,
       location: run.ids.length > 0 ? { sessionId: run.sessionId, logId: run.ids[0] } : null,
+      runFirstLogId: run.runFirstLogId,
     }))
 }
 
@@ -678,7 +689,12 @@ export async function getEnergyRecords(
 
     const parentKeys = new Set(Object.keys(event))
     const record: Record<string, unknown> = { ...event }
+
+    // energy_samples, annotations and run_first_log_id are columns the
+    // app derives for its reports, not part of the record as logged
     delete record.energy_samples
+    delete record.annotations
+    delete record.run_first_log_id
 
     // a sample row repeats its parent record's fields; only the fields
     // the sample itself carries belong in the reassembled array, so

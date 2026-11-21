@@ -14,6 +14,10 @@
  *   the id of the energy log a row belongs to; there is no per-sample
  *   id.
  *
+ *   Both record tables also carry `run_first_log_id`, the first log id
+ *   of the prompt run a row belongs to (see `runFirstLogIds`), through
+ *   which annotations resolve the run they belong to.
+ *
  *   Note: the energy_samples table is denormalized primarily because
  *   perspective.js does not support JOINs.
  *
@@ -67,7 +71,7 @@ console.error = (...args: unknown[]) => {
 }
 
 import type { PromptRunAnnotation } from './annotations'
-import { collapsePromptRuns } from './prompt-runs'
+import { findRunFirstLogIds } from './prompt-runs'
 
 /**
  * A Perspective client over the DuckDB virtual server.
@@ -424,15 +428,28 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
 
     const conn = await getConnection()
 
+    const runFirstLogId = findRunFirstLogIds(
+      deduped.map(record => ({
+        sessionId: asString(record.session_id) ?? '',
+        id: asString(record.energy_log_id),
+        kind: asString(record.kind),
+        agent: asString(record.agent),
+        prompt: asString(record.prompt),
+        time: asString(record.time),
+      })),
+    )
+
     const eventColumns = columnsOf(deduped)
     eventColumns.energy_samples = deduped.map(
       record => (Array.isArray(record.energy) ? record.energy.length : 0),
     )
     eventColumns.annotations = deduped.map(() => null)
+    eventColumns.run_first_log_id = runFirstLogId
     await insertTable(conn, 'energy_events', eventColumns)
 
     const sampleRows: Array<Record<string, unknown>> = []
-    for (const record of deduped) {
+    const sampleRunFirstLogId: Array<string | null> = []
+    deduped.forEach((record, index) => {
       const parent: Record<string, unknown> = { ...record }
       delete parent.energy
 
@@ -442,11 +459,13 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
         }
 
         sampleRows.push({ ...parent, ...(sample as Record<string, unknown>) })
+        sampleRunFirstLogId.push(runFirstLogId[index])
       }
-    }
+    })
 
     const sampleColumns = columnsOf(sampleRows)
     sampleColumns.annotations = sampleRows.map(() => null)
+    sampleColumns.run_first_log_id = sampleRunFirstLogId
     await insertTable(conn, 'energy_samples', sampleColumns)
 
     return {
@@ -465,10 +484,10 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
  *
  * - into the `prompt_annotations` table, one row per log id and tag, which
  *   the annotation filter conditions query. An annotation stores only the
- *   first log id of its run; the run's current log ids are re-derived
- *   from the loaded records with the same collapsing logic the chronology uses.
- *   This way the annotation keeps covering its whole run even when the
- *   analyzed source has grown since it was first made.
+ *   first log id of its run; the run's current log ids are resolved
+ *   through the `run_first_log_id` column the load computed. This way the
+ *   annotation keeps covering its whole run even when the analyzed source
+ *   has grown since it was first made.
  * - into the `annotations` column of the two record tables, each log's tags
  *   joined as a comma-separated string for the raw data view
  *
@@ -479,38 +498,40 @@ export async function syncPromptAnnotations(
   annotations: readonly PromptRunAnnotation[],
 ): Promise<void> {
   const load = loadChain.then(async () => {
-    const runs = collapsePromptRuns(
-      (
-        await queryEnergy(`
-          SELECT session_id, energy_log_id, kind, agent, prompt
-          FROM energy_events
-          ORDER BY session_id, time, energy_log_id
-        `)
-      ).map(row => ({
-        sessionId: asString(row['session_id']) ?? '',
-        id: asString(row['energy_log_id']),
-        kind: asString(row['kind']),
-        agent: asString(row['agent']),
-        prompt: asString(row['prompt']),
-      })),
-    )
+    const runRows = await queryEnergy(`
+      SELECT energy_log_id, run_first_log_id
+      FROM energy_events
+      WHERE energy_log_id IS NOT NULL AND run_first_log_id IS NOT NULL
+    `)
 
-    const runLogIds = new Map<string, readonly string[]>()
-    for (const run of runs) {
-      for (const id of run.ids) {
-        runLogIds.set(id, run.ids)
+    const firstOfLogId = new Map<string, string>()
+    const logIdsOfFirst = new Map<string, string[]>()
+    for (const row of runRows) {
+      const logId = String(row['energy_log_id'])
+
+      const firstLogId = String(row['run_first_log_id'])
+      firstOfLogId.set(logId, firstLogId)
+
+      const logIds = logIdsOfFirst.get(firstLogId)
+      if (logIds === undefined) {
+        logIdsOfFirst.set(firstLogId, [logId])
+      } else {
+        logIds.push(logId)
       }
     }
 
-    const rows = annotations.flatMap(annotation =>
-      (runLogIds.get(annotation.logId) ?? []).flatMap(energyLogId =>
+    const rows = annotations.flatMap(annotation => {
+      const firstLogId = firstOfLogId.get(annotation.logId)
+      const logIds = firstLogId !== undefined ? logIdsOfFirst.get(firstLogId) : undefined
+
+      return (logIds ?? []).flatMap(energyLogId =>
         annotation.tags.map(tag => ({
           session_id: annotation.sessionId,
           energy_log_id: energyLogId,
           tag,
         })),
-      ),
-    )
+      )
+    })
 
     const conn = await getConnection()
     await insertTable(conn, 'prompt_annotations', {
