@@ -199,25 +199,59 @@ function bootstrapPerspective(): Promise<void> {
   return bootstrapPromise
 }
 
+interface ParsedRecord {
+  readonly record: EnergyRecord
+
+  /** The 1-based line of the file the record was parsed from. */
+  readonly line: number
+}
+
 /** Parses the JSONL of an energy file, skipping malformed lines. */
-function parseJsonl(text: string): EnergyRecord[] {
-  const records: EnergyRecord[] = []
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim()
+function parseJsonl(text: string): ParsedRecord[] {
+  const records: ParsedRecord[] = []
+
+  const lines = text.split('\n')
+  for (let index = 0; index < lines.length; index++) {
+    const trimmed = lines[index].trim()
     if (trimmed.length === 0) {
       continue
     }
+
     try {
       const value: unknown = JSON.parse(trimmed)
       if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-        records.push(value as EnergyRecord)
+        records.push({ record: value as EnergyRecord, line: index + 1 })
       }
     } catch {
       // skip malformed lines, e.g. a line that is currently being
       // written to
     }
   }
+
   return records
+}
+
+/** The datetime format the logger writes its record times in (`new Date().toISOString()`). */
+const TIME_FORMAT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
+function hasLoggerTimeFormat(record: EnergyRecord): boolean {
+  return (
+    typeof record.time === 'string'
+    && TIME_FORMAT_PATTERN.test(record.time)
+    && !Number.isNaN(Date.parse(record.time))
+  )
+}
+
+const SKIPPED_TIME_REPORT_LIMIT = 50
+
+export function skippedDueToInvalidTimeReport(skippedTimeLines: readonly string[]): string | null {
+  if (skippedTimeLines.length === 0) {
+    return null
+  }
+
+  const listed = skippedTimeLines.slice(0, SKIPPED_TIME_REPORT_LIMIT).join(', ')
+  const unlisted = skippedTimeLines.length - SKIPPED_TIME_REPORT_LIMIT
+  return `${skippedTimeLines.length} ${skippedTimeLines.length === 1 ? 'record was' : 'records were'} skipped for a time outside the logger's datetime format (e.g. 2026-11-01T10:00:00.000Z): ${listed}${unlisted > 0 ? ` (+${unlisted} more)` : ''}`
 }
 
 /**
@@ -380,6 +414,9 @@ export interface LoadedEnergyColumns {
   readonly events: string[]
   readonly samples: string[]
   readonly annotations: string[]
+
+  /** The `file:line` of every record skipped for a time outside the logger's format. */
+  readonly skippedTimeLines: readonly string[]
 }
 
 /**
@@ -416,14 +453,33 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
   )
 
   const load = loadChain.then(async () => {
-    const records = texts.flatMap((text, index) => {
+    const parsed = texts.flatMap((text, index) => {
       const sessionId = filenames[index].replace(/\.jsonl$/, '')
-      return parseJsonl(text).map(record => withSessionId(record, sessionId))
+      return parseJsonl(text).map(({ record, line }) => ({
+        filename: filenames[index],
+        line,
+        record: withSessionId(record, sessionId),
+      }))
     })
+
+    const skippedTimeLines: string[] = []
+    const records: EnergyRecord[] = []
+    for (const { filename, line, record } of parsed) {
+      if (hasLoggerTimeFormat(record)) {
+        records.push(record)
+      } else {
+        skippedTimeLines.push(`${filename}:${line}`)
+      }
+    }
 
     const deduped = dedupeRecords(records).map(withEnergyLogId)
     if (deduped.length === 0) {
-      throw new Error('The energy files contain no energy records')
+      const report = skippedDueToInvalidTimeReport(skippedTimeLines)
+      throw new Error(
+        report === null
+          ? 'The energy files contain no energy records'
+          : `The energy files contain no energy records — ${report}`,
+      )
     }
 
     const conn = await getConnection()
@@ -472,6 +528,7 @@ export async function loadEnergyFiles(filenames: string[]): Promise<LoadedEnergy
       events: Object.keys(eventColumns),
       samples: Object.keys(sampleColumns),
       annotations: [...PROMPT_ANNOTATION_COLUMNS],
+      skippedTimeLines,
     }
   })
 

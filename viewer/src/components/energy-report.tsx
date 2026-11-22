@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import {
   loadEnergyFiles,
+  skippedDueToInvalidTimeReport,
   syncPromptAnnotations,
   type LoadedEnergyColumns,
 } from '@/lib/energy/perspective'
@@ -63,6 +64,11 @@ function EnergyReportBody({ filenames, source }: EnergyReportProps) {
       .then(loaded => {
         if (!cancelled) {
           setColumns(loaded)
+
+          const skipped = skippedDueToInvalidTimeReport(loaded.skippedTimeLines)
+          if (skipped !== null) {
+            setError(skipped)
+          }
         }
       })
       .catch(caught => {
