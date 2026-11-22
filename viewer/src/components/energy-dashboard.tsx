@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   computeDashboardStats,
   type DashboardStats,
@@ -17,6 +17,7 @@ import {
 } from '@/lib/energy/format'
 import { PromptChronology } from '@/components/prompt-chronology'
 import { TopPrompts } from '@/components/top-prompts'
+import { EnergyEquivalence } from '@/components/energy-equivalence'
 
 interface EnergyDashboardProps {
   /** The filter restricting which records the dashboard's metrics use. */
@@ -80,6 +81,7 @@ export function EnergyDashboard({ filter, annotationSyncCount }: EnergyDashboard
           label="Total energy"
           value={formatKwh(totals.totalKwh)}
           detail={formatJoules(totals.totalKwh)}
+          footer={<EnergyEquivalence kwh={totals.totalKwh} />}
         />
         <StatCard
           label="Carbon footprint"
@@ -141,12 +143,23 @@ export function EnergyDashboard({ filter, annotationSyncCount }: EnergyDashboard
   )
 }
 
-function StatCard({ label, value, detail }: { label: string; value: string; detail?: string }) {
+function StatCard({
+  label,
+  value,
+  detail,
+  footer,
+}: {
+  label: string
+  value: string
+  detail?: string
+  footer?: ReactNode
+}) {
   return (
     <div className="rounded-md border border-zinc-200 p-4">
       <dt className="text-sm text-zinc-500">{label}</dt>
       <dd className="mt-1 text-xl font-semibold text-zinc-900">{value}</dd>
       {detail !== undefined ? <p className="mt-0.5 text-xs text-zinc-500">{detail}</p> : null}
+      {footer !== undefined ? footer : null}
     </div>
   )
 }
